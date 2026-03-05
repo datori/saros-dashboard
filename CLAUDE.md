@@ -186,6 +186,72 @@ The FastAPI dashboard (`dashboard.py`) exposes these endpoints:
 | POST | `/api/routine/{name}` | Run named routine |
 | POST | `/api/rooms/clean` | Body: `{segment_ids: int[], repeat: int, fan_speed?, mop_mode?, water_flow?, route?}` |
 
+## Connectivity Architecture & Known Issues
+
+### How commands travel
+
+```
+Browser (JS fetch)
+    │  up to 7 concurrent calls on page load
+    ▼
+FastAPI / uvicorn  (dashboard.py, port 8181)
+    │  single shared VacuumClient — lives for the server process lifetime
+    ▼
+python-roborock DeviceManager
+    │  one persistent MQTT connection, single RPC channel (request_id correlation)
+    │  10-second hard timeout per command, no retry
+    ▼
+Roborock Cloud MQTT Broker  (usiot.roborock.com:8883, TCP/TLS)
+    │  Roborock's AWS-hosted relay
+    ▼
+Vacuum device (Saros 10R) — executes and responds via same broker
+```
+
+Every command is a **cloud round-trip**, even on the same LAN. There is no direct local path in use.
+
+### Three failure modes
+
+**Mode 1 — Cloud unreachable** (intermittent)
+TCP connections to `usiot.roborock.com:8883` time out. Can be caused by broker downtime, routing issues, or firewall. Nothing in application code can fix this. All pending MQTT commands hit the 10s timeout simultaneously.
+
+**Mode 2 — MQTT session degrades while server is running** (the main recurring problem)
+The MQTT connection is persistent, established once at `authenticate()`. When it drops (idle timeout, broker maintenance, IP change), python-roborock's `connect_loop()` tries to reconnect but raises `"Only one subscription allowed at a time"` in `v1_channel.py:293` because the old subscription was never cleaned up before resubscribing. This is a **library bug**. The client is permanently wedged; all subsequent commands fail with timeout or "MQTT client not connected". Workaround: auto-recreate the `VacuumClient` after 3 consecutive failures (implemented in `dashboard.py` via `_maybe_reconnect()`).
+
+**Mode 3 — Request burst saturation** (mitigated)
+7 JS loaders fired simultaneously on every page load, all sending MQTT commands concurrently through the single RPC channel. Addressed by: 5s response cache (per-endpoint, with asyncio.Lock stampede prevention) + 300ms stagger between JS loaders in `refreshAll()`.
+
+### Dashboard resilience mechanisms (current)
+
+- **Response cache**: `_cached(key, ttl, fn)` in `dashboard.py` — 5s TTL, per-key `asyncio.Lock`, errors not cached, invalidated after write actions
+- **Auto-reconnect**: `_maybe_reconnect()` — after 3 consecutive failures, closes broken client and re-authenticates
+- **Staggered refresh**: `refreshAll()` spreads 7 loaders over ~1.8s via `setTimeout(fn, i * 300)`
+- **Consistent JSON errors**: all endpoints return `{"error": "..."}` (GET) or `HTTPException(503)` (POST) instead of HTML 500
+
+### Local API — why it's not in use
+
+The Saros 10R exposes a local protocol on UDP/TCP port 58867 (same as other Roborock devices). python-roborock has local API support built in. However, **the Saros 10R falls back to cloud API despite port 58867 being accessible** — confirmed in open issues [home-assistant/core#152136](https://github.com/home-assistant/core/issues/152136) and [#152159](https://github.com/home-assistant/core/issues/152159). The device may use a newer local protocol version that the library doesn't yet support. Worth revisiting when python-roborock updates local support for newer Saros models.
+
+### Matter — what it offers and what it doesn't
+
+Roborock shipped Matter firmware to the Saros 10R in April 2025 (Matter 1.4). Matter is **local-first** (LAN, no cloud). However, the Matter robot vacuum device type has a limited API surface:
+
+| Capability | Matter support |
+|---|---|
+| Start / stop / pause / dock | ✅ RVC Operational State cluster |
+| Vacuum / mop mode selection | ✅ RVC Clean Mode cluster |
+| Room/zone selection | ✅ Matter 1.4 Service Area cluster (new, limited ecosystem support) |
+| Fan speed, water flow, mop intensity | ❌ Not in Matter spec |
+| Clean history | ❌ Not in Matter spec |
+| Consumables | ❌ Not in Matter spec |
+| Routines / scenes | ❌ Not in Matter spec |
+
+Integration requires a running Matter controller (`python-matter-server` WebSocket daemon); there is no simple library import. Matter would solve cloud reliability for basic controls but lose ~half the dashboard's features. **Not recommended as a replacement for the cloud API** unless Apple Home / Google Home integration is specifically needed.
+
+### Recommended evolution path
+
+1. **Now**: Background health poller — asyncio task that proactively pings the device every 60s, warms the cache, and triggers reconnect before users see failures. UI shows stale-but-valid data with "last updated" timestamp instead of errors during connectivity blips.
+2. **Later**: Monitor python-roborock for local API fixes on Saros 10R. When local API works, switching is low-effort (same VacuumClient API, just a different connection mode) and eliminates cloud dependency entirely.
+
 ## Key Discoveries / Gotchas
 
 **Cloud-only API**: `python-roborock` communicates via Roborock's cloud. No local network control. All commands go through the cloud even when the device is on the same LAN.

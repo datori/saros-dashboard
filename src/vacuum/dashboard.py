@@ -33,11 +33,20 @@ _MAX_FAILURES_BEFORE_RECONNECT = 3
 
 _cache: dict[str, tuple[float, object]] = {}
 _cache_locks: dict[str, asyncio.Lock] = {}
+_stale_cache: dict[str, object] = {}
+
+# ---------------------------------------------------------------------------
+# Health state
+# ---------------------------------------------------------------------------
+
+_last_contact: float | None = None  # monotonic timestamp of last successful device call
+_reconnect_count: int = 0
 
 
 async def _cached(key: str, ttl: float, fn):
     """Return cached result if fresh, else call fn() and cache the result.
-    Tracks device call success/failure to drive auto-reconnect."""
+    Falls back to stale cache on failure. Tracks success/failure for auto-reconnect."""
+    global _last_contact
     now = time.monotonic()
     if key in _cache:
         ts, val = _cache[key]
@@ -56,18 +65,38 @@ async def _cached(key: str, ttl: float, fn):
             result = await fn()
         except Exception:
             if _record_failure():
-                # Schedule a background reconnect for the next request
                 asyncio.ensure_future(_maybe_reconnect())
+            # Return stale data if available
+            if key in _stale_cache:
+                stale = _stale_cache[key]
+                if isinstance(stale, dict):
+                    return {**stale, "_stale": True}
+                if isinstance(stale, list):
+                    return stale  # lists can't carry _stale; JS handles via health endpoint
             raise
         _record_success()
-        _cache[key] = (time.monotonic(), result)
+        _last_contact = time.monotonic()
+        _cache[key] = (_last_contact, result)
+        _stale_cache[key] = result
         return result
 
 
 def _cache_invalidate(*keys: str) -> None:
-    """Remove named entries from the cache."""
+    """Remove named entries from the hot cache (stale cache preserved for fallback)."""
     for key in keys:
         _cache.pop(key, None)
+
+
+async def _health_poll_loop() -> None:
+    """Background task: poll device status every 60s to warm cache and detect failures early."""
+    import logging
+    log = logging.getLogger("vacuum")
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await _cached("status", _CACHE_TTL, _fetch_status)
+        except Exception as e:
+            log.debug("Health poll failed: %s", e)
 
 
 @asynccontextmanager
@@ -82,9 +111,15 @@ async def _lifespan(app: FastAPI):
     except Exception as e:
         import logging
         logging.getLogger("vacuum").warning("Could not sync rooms on startup: %s", e)
+    poller = asyncio.create_task(_health_poll_loop())
     try:
         yield
     finally:
+        poller.cancel()
+        try:
+            await poller
+        except asyncio.CancelledError:
+            pass
         if _client:
             await _client.close()
             _client = None
@@ -113,7 +148,7 @@ def _record_failure() -> bool:
 
 async def _maybe_reconnect() -> None:
     """Recreate the VacuumClient if failure threshold has been reached."""
-    global _client, _client_failures
+    global _client, _client_failures, _reconnect_count
     if _client_failures < _MAX_FAILURES_BEFORE_RECONNECT:
         return
     if _reconnect_lock.locked():
@@ -131,12 +166,14 @@ async def _maybe_reconnect() -> None:
             pass
         _client = None
         _cache.clear()
+        _stale_cache.clear()
         try:
             new_client = VacuumClient()
             await new_client.authenticate()
             _client = new_client
             _client_failures = 0
-            log.info("VacuumClient reconnected successfully")
+            _reconnect_count += 1
+            log.info("VacuumClient reconnected successfully (reconnect #%d)", _reconnect_count)
         except Exception as e:
             log.error("Reconnect failed: %s", e)
 
@@ -417,6 +454,14 @@ async def api_schedule_room_patch(segment_id: int, body: ScheduleRoomPatch):
     return {"ok": True}
 
 
+@app.get("/api/health")
+async def api_health():
+    now = time.monotonic()
+    seconds_ago = round(now - _last_contact, 1) if _last_contact is not None else None
+    ok = _last_contact is not None and (now - _last_contact) < 120
+    return {"ok": ok, "last_contact_seconds_ago": seconds_ago, "reconnect_count": _reconnect_count}
+
+
 # ---------------------------------------------------------------------------
 # Frontend HTML
 # ---------------------------------------------------------------------------
@@ -476,6 +521,21 @@ _HTML = """<!DOCTYPE html>
     letter-spacing: 0.08em;
     color: var(--muted);
     margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .panel-title.stale { opacity: 0.6; }
+  .panel-title.stale::after { content: "⏱"; font-size: 10px; }
+  #connectivity-banner {
+    display: none;
+    background: #3d2b1f;
+    border: 1px solid #7c3a1e;
+    color: #f97316;
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    font-size: 13px;
   }
   .stat-row {
     display: flex;
@@ -634,11 +694,12 @@ _HTML = """<!DOCTYPE html>
   <span class="refresh-info">Auto-refreshes every 30s &nbsp;·&nbsp; <a href="#" onclick="refreshAll();return false" style="color:var(--accent)">Refresh now</a></span>
 </header>
 
+<div id="connectivity-banner"></div>
 <div class="grid">
 
   <!-- Status Panel -->
   <div class="panel">
-    <div class="panel-title">Status</div>
+    <div class="panel-title" id="title-status">Status</div>
     <div id="status-content" class="loading">Loading…</div>
     <div class="last-updated" id="status-updated"></div>
   </div>
@@ -681,7 +742,7 @@ _HTML = """<!DOCTYPE html>
 
   <!-- Rooms Panel -->
   <div class="panel">
-    <div class="panel-title">Rooms</div>
+    <div class="panel-title" id="title-rooms">Rooms</div>
     <div id="rooms-content" class="loading">Loading…</div>
   </div>
 
@@ -730,7 +791,7 @@ _HTML = """<!DOCTYPE html>
 
   <!-- Clean Settings Panel -->
   <div class="panel">
-    <div class="panel-title">Clean Settings</div>
+    <div class="panel-title" id="title-settings">Clean Settings</div>
     <div class="settings-grid" id="settings-content">
       <div class="settings-row">
         <span class="settings-label">Fan Speed</span>
@@ -759,20 +820,20 @@ _HTML = """<!DOCTYPE html>
 
   <!-- Routines Panel -->
   <div class="panel">
-    <div class="panel-title">Routines</div>
+    <div class="panel-title" id="title-routines">Routines</div>
     <div id="routines-content" class="loading">Loading…</div>
     <div class="feedback" id="routine-feedback"></div>
   </div>
 
   <!-- Consumables Panel -->
   <div class="panel">
-    <div class="panel-title">Consumables</div>
+    <div class="panel-title" id="title-consumables">Consumables</div>
     <div id="consumables-content" class="loading">Loading…</div>
   </div>
 
   <!-- Clean History Panel -->
   <div class="panel" style="grid-column: 1/-1; min-width: 0;">
-    <div class="panel-title">Clean History (last 10)</div>
+    <div class="panel-title" id="title-history">Clean History (last 10)</div>
     <div id="history-content" class="loading">Loading…</div>
   </div>
 
@@ -861,6 +922,7 @@ async function loadStatus() {
   try {
     const d = await fetch('/api/status').then(r => r.json());
     if (d.error) { el.innerHTML = `<span class="unavailable">Error: ${d.error}</span>`; return; }
+    markStale('title-status', !!d._stale);
 
     const stateColor = d.state && d.state.toLowerCase().includes('clean') ? 'badge-blue'
       : d.state === 'charging' || d.state === 'charging_complete' ? 'badge-green'
@@ -1046,6 +1108,7 @@ async function loadSettings() {
   try {
     const s = await fetch('/api/settings').then(r => r.json());
     if (s.error) { document.getElementById('settings-feedback').textContent = `Could not load settings: ${s.error}`; return; }
+    markStale('title-settings', !!s._stale);
     populateSelect('set-fan-speed',  ['QUIET','BALANCED','TURBO','MAX','MAX_PLUS','OFF','SMART'], s.fan_speed);
     populateSelect('set-mop-mode',   ['STANDARD','FAST','DEEP','DEEP_PLUS','SMART'], s.mop_mode);
     populateSelect('set-water-flow', ['OFF','LOW','MEDIUM','HIGH','EXTREME','VAC_THEN_MOP','SMART'], s.water_flow);
@@ -1079,6 +1142,7 @@ async function loadConsumables() {
       el.innerHTML = `<span class="unavailable">Unavailable: ${c.error}</span>`;
       return;
     }
+    markStale('title-consumables', !!c._stale);
     el.innerHTML = [
       progressBar('Main brush', c.main_brush_pct, 'main_brush_work_time'),
       progressBar('Side brush', c.side_brush_pct, 'side_brush_work_time'),
@@ -1262,9 +1326,31 @@ async function saveEditModal() {
   }
 }
 
+// ------------------------------------------------------------------ stale + health
+function markStale(titleId, isStale) {
+  const el = document.getElementById(titleId);
+  if (!el) return;
+  if (isStale) el.classList.add('stale');
+  else el.classList.remove('stale');
+}
+
+async function loadHealth() {
+  try {
+    const h = await fetch('/api/health').then(r => r.json());
+    const banner = document.getElementById('connectivity-banner');
+    if (!h.ok && h.last_contact_seconds_ago !== null) {
+      const mins = Math.round(h.last_contact_seconds_ago / 60);
+      banner.textContent = `⚠ Device unreachable — last contact ${mins}m ago`;
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch(e) { /* ignore */ }
+}
+
 // ------------------------------------------------------------------ refresh
 function refreshAll() {
-  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule];
+  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth];
   loaders.forEach((fn, i) => setTimeout(fn, i * 300));
 }
 

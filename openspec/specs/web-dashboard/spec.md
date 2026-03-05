@@ -47,7 +47,7 @@ The system SHALL display a status panel showing current vacuum state, battery le
 
 #### Scenario: Auto-refresh
 - **WHEN** the dashboard is open and 30 seconds elapse
-- **THEN** all data panels SHALL refresh by re-fetching their respective API endpoints
+- **THEN** all data panels SHALL refresh by re-fetching their respective API endpoints, with each loader staggered approximately 300 ms apart
 
 ### Requirement: Rooms panel
 The system SHALL display a panel listing all rooms with their segment IDs and names.
