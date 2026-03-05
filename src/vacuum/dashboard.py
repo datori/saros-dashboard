@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 import webbrowser
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -21,6 +23,39 @@ from . import scheduler
 # ---------------------------------------------------------------------------
 
 _client: VacuumClient | None = None
+
+# ---------------------------------------------------------------------------
+# Response cache
+# ---------------------------------------------------------------------------
+
+_cache: dict[str, tuple[float, object]] = {}
+_cache_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _cached(key: str, ttl: float, fn):
+    """Return cached result if fresh, else call fn() and cache the result."""
+    now = time.monotonic()
+    if key in _cache:
+        ts, val = _cache[key]
+        if now - ts < ttl:
+            return val
+    if key not in _cache_locks:
+        _cache_locks[key] = asyncio.Lock()
+    async with _cache_locks[key]:
+        # Double-check after acquiring lock
+        if key in _cache:
+            ts, val = _cache[key]
+            if now - ts < ttl:
+                return val
+        result = await fn()
+        _cache[key] = (time.monotonic(), result)
+        return result
+
+
+def _cache_invalidate(*keys: str) -> None:
+    """Remove named entries from the cache."""
+    for key in keys:
+        _cache.pop(key, None)
 
 
 @asynccontextmanager
@@ -57,11 +92,43 @@ def _get_client() -> VacuumClient:
 # ---------------------------------------------------------------------------
 
 
+_CACHE_TTL = 5.0  # seconds
+
+
+async def _fetch_status():
+    s = await _get_client().get_status()
+    return s.as_dict()
+
+
+async def _fetch_rooms():
+    rooms = await _get_client().get_rooms()
+    return [{"id": r.id, "name": r.name} for r in rooms]
+
+
+async def _fetch_routines():
+    routines = await _get_client().get_routines()
+    return [r.name for r in routines]
+
+
+async def _fetch_consumables():
+    c = await _get_client().get_consumables()
+    return c.as_dict()
+
+
+async def _fetch_history():
+    records = await _get_client().get_clean_history(limit=10)
+    return [r.as_dict() for r in records]
+
+
+async def _fetch_settings():
+    s = await _get_client().get_current_settings()
+    return s.as_dict()
+
+
 @app.get("/api/status")
 async def api_status():
     try:
-        s = await _get_client().get_status()
-        return s.as_dict()
+        return await _cached("status", _CACHE_TTL, _fetch_status)
     except Exception as e:
         return {"error": str(e)}
 
@@ -69,8 +136,7 @@ async def api_status():
 @app.get("/api/rooms")
 async def api_rooms():
     try:
-        rooms = await _get_client().get_rooms()
-        return [{"id": r.id, "name": r.name} for r in rooms]
+        return await _cached("rooms", _CACHE_TTL, _fetch_rooms)
     except Exception as e:
         return {"error": str(e)}
 
@@ -78,8 +144,7 @@ async def api_rooms():
 @app.get("/api/routines")
 async def api_routines():
     try:
-        routines = await _get_client().get_routines()
-        return [r.name for r in routines]
+        return await _cached("routines", _CACHE_TTL, _fetch_routines)
     except Exception as e:
         return {"error": str(e)}
 
@@ -87,8 +152,7 @@ async def api_routines():
 @app.get("/api/consumables")
 async def api_consumables():
     try:
-        c = await _get_client().get_consumables()
-        return c.as_dict()
+        return await _cached("consumables", _CACHE_TTL, _fetch_consumables)
     except Exception as e:
         return {"error": str(e)}
 
@@ -96,8 +160,7 @@ async def api_consumables():
 @app.get("/api/history")
 async def api_history():
     try:
-        records = await _get_client().get_clean_history(limit=10)
-        return [r.as_dict() for r in records]
+        return await _cached("history", _CACHE_TTL, _fetch_history)
     except Exception as e:
         return {"error": str(e)}
 
@@ -152,8 +215,7 @@ def _parse_settings(data: dict) -> tuple[FanSpeed | None, MopMode | None, WaterF
 @app.get("/api/settings")
 async def api_settings_get():
     try:
-        s = await _get_client().get_current_settings()
-        return s.as_dict()
+        return await _cached("settings", _CACHE_TTL, _fetch_settings)
     except Exception as e:
         return {"error": str(e)}
 
@@ -175,6 +237,7 @@ async def api_settings_post(body: SettingsRequest):
             await client.set_mop_mode(mop_mode)
         if water_flow is not None:
             await client.set_water_flow(water_flow)
+        _cache_invalidate("settings")
         return {"ok": True}
     except HTTPException:
         raise
@@ -203,10 +266,12 @@ async def api_action(name: str, body: StartCleanRequest | None = None):
                 all_ids = [r.segment_id for r in rows]
                 if all_ids:
                     await scheduler.log_clean(all_ids, mode, source="dashboard")
+            _cache_invalidate("status")
             return {"ok": True}
         if name not in _ACTIONS:
             raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: start, {list(_ACTIONS)}")
         await _ACTIONS[name](_get_client())
+        _cache_invalidate("status")
         return {"ok": True}
     except HTTPException:
         raise
@@ -253,6 +318,7 @@ async def api_rooms_clean(body: RoomsCleanRequest):
         )
         mode = "both" if (body.water_flow and body.water_flow != "OFF") else "vacuum"
         await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
+        _cache_invalidate("status")
         return {"ok": True}
     except HTTPException:
         raise
@@ -1072,13 +1138,8 @@ async function saveEditModal() {
 
 // ------------------------------------------------------------------ refresh
 function refreshAll() {
-  loadStatus();
-  loadRooms();
-  loadRoutines();
-  loadConsumables();
-  loadHistory();
-  loadSettings();
-  loadSchedule();
+  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule];
+  loaders.forEach((fn, i) => setTimeout(fn, i * 300));
 }
 
 // Initial load + auto-refresh
