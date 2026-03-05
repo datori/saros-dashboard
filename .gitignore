@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Secrets — never commit these
+.env
+.roborock_session.json
+
+# Editor
+.DS_Store
