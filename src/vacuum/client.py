@@ -18,6 +18,7 @@ from roborock.data.v1.v1_code_mappings import RoborockStateCode
 from roborock.devices.cache import NoCache
 from roborock.devices.device import RoborockDevice
 from roborock.devices.device_manager import DeviceManager, UserParams, create_device_manager
+from roborock.devices.traits.v1.consumeable import ConsumableAttribute
 from roborock.exceptions import RoborockException
 from roborock.roborock_typing import RoborockCommand
 from roborock.web_api import RoborockApiClient
@@ -317,6 +318,15 @@ class VacuumClient:
             filter_pct=_pct(c.filter_work_time, FILTER_REPLACE_TIME),
             sensor_pct=_pct(c.sensor_dirty_time, SENSOR_DIRTY_REPLACE_TIME),
         )
+
+    _CONSUMABLE_ATTRIBUTES = {a.value for a in ConsumableAttribute}
+
+    async def reset_consumable(self, attribute: str) -> None:
+        """Reset a consumable timer by attribute name."""
+        if attribute not in self._CONSUMABLE_ATTRIBUTES:
+            raise ValueError(f"Unknown consumable attribute: {attribute!r}. Valid: {sorted(self._CONSUMABLE_ATTRIBUTES)}")
+        v1 = await self._v1()
+        await v1.consumables.reset_consumable(ConsumableAttribute(attribute))
 
     # -------------------------------------------------------------------------
     # Clean history

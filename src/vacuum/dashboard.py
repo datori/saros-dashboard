@@ -102,6 +102,15 @@ async def api_action(name: str):
     return {"ok": True}
 
 
+@app.post("/api/consumables/reset/{attribute}")
+async def api_consumables_reset(attribute: str):
+    try:
+        await _get_client().reset_consumable(attribute)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/api/routine/{name}")
 async def api_routine(name: str):
     await _get_client().run_routine(name)
@@ -203,6 +212,8 @@ _HTML = """<!DOCTYPE html>
   .badge-gray { background: var(--border); color: var(--muted); }
   .progress-wrap { margin: 8px 0; }
   .progress-label { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .btn-reset { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); cursor: pointer; }
+  .btn-reset:hover { color: var(--text); border-color: var(--accent); }
   .progress-bar-bg {
     height: 8px;
     background: var(--border);
@@ -371,12 +382,15 @@ function pctBadge(p) {
   return `<span class="badge ${cls}">${p}%</span>`;
 }
 
-function progressBar(label, pct) {
+function progressBar(label, pct, attribute) {
   const color = pctColor(pct);
   const display = pct != null ? pct + '%' : '—';
+  const resetBtn = attribute
+    ? `<button class="btn-reset" onclick="resetConsumable('${attribute}','${label}')">Reset</button>`
+    : '';
   return `
     <div class="progress-wrap">
-      <div class="progress-label"><span>${label}</span><span>${display}</span></div>
+      <div class="progress-label"><span>${label}</span><span style="display:flex;align-items:center;gap:8px">${display}${resetBtn}</span></div>
       <div class="progress-bar-bg">
         <div class="progress-bar ${color}" style="width:${pct ?? 0}%"></div>
       </div>
@@ -544,13 +558,27 @@ async function loadConsumables() {
       return;
     }
     el.innerHTML = [
-      progressBar('Main brush', c.main_brush_pct),
-      progressBar('Side brush', c.side_brush_pct),
-      progressBar('Filter',     c.filter_pct),
-      progressBar('Sensors',    c.sensor_pct),
+      progressBar('Main brush', c.main_brush_pct, 'main_brush_work_time'),
+      progressBar('Side brush', c.side_brush_pct, 'side_brush_work_time'),
+      progressBar('Filter',     c.filter_pct,     'filter_work_time'),
+      progressBar('Sensors',    c.sensor_pct,     'sensor_dirty_time'),
     ].join('');
   } catch(e) {
     el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+async function resetConsumable(attribute, label) {
+  if (!confirm(`Reset ${label} timer? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/consumables/reset/${attribute}`, {method:'POST'}).then(r => r.json());
+    if (res.ok) {
+      await loadConsumables();
+    } else {
+      alert(`Reset failed: ${res.detail || 'Unknown error'}`);
+    }
+  } catch(e) {
+    alert(`Reset error: ${e.message}`);
   }
 }
 
