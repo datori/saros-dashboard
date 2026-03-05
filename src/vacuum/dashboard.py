@@ -160,22 +160,26 @@ async def _maybe_reconnect() -> None:
         log = logging.getLogger("vacuum")
         log.warning("Reconnecting VacuumClient after %d consecutive failures", _client_failures)
         try:
-            if _client:
-                await _client.close()
-        except Exception:
-            pass
-        _client = None
-        _cache.clear()
-        _stale_cache.clear()
-        try:
             new_client = VacuumClient()
             await new_client.authenticate()
+            # Only replace after successful auth — never leave _client = None
+            old = _client
             _client = new_client
             _client_failures = 0
             _reconnect_count += 1
+            _cache.clear()
+            _stale_cache.clear()
             log.info("VacuumClient reconnected successfully (reconnect #%d)", _reconnect_count)
+            if old:
+                try:
+                    await old.close()
+                except Exception:
+                    pass
         except Exception as e:
-            log.error("Reconnect failed: %s", e)
+            log.error("Reconnect failed: %s — will retry on next request", e)
+            # Reset failure counter slightly so we don't hammer on every request,
+            # but stay above threshold so reconnect is retried soon.
+            _client_failures = _MAX_FAILURES_BEFORE_RECONNECT
 
 
 # ---------------------------------------------------------------------------
