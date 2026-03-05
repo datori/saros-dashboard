@@ -29,8 +29,12 @@ async def _lifespan(app: FastAPI):
     scheduler.init_db()
     _client = VacuumClient()
     await _client.authenticate()
-    rooms = await _client.get_rooms()
-    await scheduler.sync_rooms(rooms)
+    try:
+        rooms = await _client.get_rooms()
+        await scheduler.sync_rooms(rooms)
+    except Exception as e:
+        import logging
+        logging.getLogger("vacuum").warning("Could not sync rooms on startup: %s", e)
     try:
         yield
     finally:
@@ -55,20 +59,29 @@ def _get_client() -> VacuumClient:
 
 @app.get("/api/status")
 async def api_status():
-    s = await _get_client().get_status()
-    return s.as_dict()
+    try:
+        s = await _get_client().get_status()
+        return s.as_dict()
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/rooms")
 async def api_rooms():
-    rooms = await _get_client().get_rooms()
-    return [{"id": r.id, "name": r.name} for r in rooms]
+    try:
+        rooms = await _get_client().get_rooms()
+        return [{"id": r.id, "name": r.name} for r in rooms]
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/routines")
 async def api_routines():
-    routines = await _get_client().get_routines()
-    return [r.name for r in routines]
+    try:
+        routines = await _get_client().get_routines()
+        return [r.name for r in routines]
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/consumables")
@@ -138,8 +151,11 @@ def _parse_settings(data: dict) -> tuple[FanSpeed | None, MopMode | None, WaterF
 
 @app.get("/api/settings")
 async def api_settings_get():
-    s = await _get_client().get_current_settings()
-    return s.as_dict()
+    try:
+        s = await _get_client().get_current_settings()
+        return s.as_dict()
+    except Exception as e:
+        return {"error": str(e)}
 
 
 class SettingsRequest(BaseModel):
@@ -150,15 +166,20 @@ class SettingsRequest(BaseModel):
 
 @app.post("/api/settings")
 async def api_settings_post(body: SettingsRequest):
-    client = _get_client()
-    fan_speed, mop_mode, water_flow, _ = _parse_settings(body.model_dump(exclude_none=False))
-    if fan_speed is not None:
-        await client.set_fan_speed(fan_speed)
-    if mop_mode is not None:
-        await client.set_mop_mode(mop_mode)
-    if water_flow is not None:
-        await client.set_water_flow(water_flow)
-    return {"ok": True}
+    try:
+        client = _get_client()
+        fan_speed, mop_mode, water_flow, _ = _parse_settings(body.model_dump(exclude_none=False))
+        if fan_speed is not None:
+            await client.set_fan_speed(fan_speed)
+        if mop_mode is not None:
+            await client.set_mop_mode(mop_mode)
+        if water_flow is not None:
+            await client.set_water_flow(water_flow)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 class StartCleanRequest(BaseModel):
@@ -170,22 +191,27 @@ class StartCleanRequest(BaseModel):
 
 @app.post("/api/action/{name}")
 async def api_action(name: str, body: StartCleanRequest | None = None):
-    if name == "start":
-        data = body.model_dump() if body else {}
-        fan_speed, mop_mode, water_flow, route = _parse_settings(data)
-        await _get_client().start_clean(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
-        # Log whole-home clean if water_flow is present
-        if body and body.water_flow:
-            mode = "both" if body.water_flow != "OFF" else "vacuum"
-            rows = await scheduler.get_schedule()
-            all_ids = [r.segment_id for r in rows]
-            if all_ids:
-                await scheduler.log_clean(all_ids, mode, source="dashboard")
+    try:
+        if name == "start":
+            data = body.model_dump() if body else {}
+            fan_speed, mop_mode, water_flow, route = _parse_settings(data)
+            await _get_client().start_clean(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
+            # Log whole-home clean if water_flow is present
+            if body and body.water_flow:
+                mode = "both" if body.water_flow != "OFF" else "vacuum"
+                rows = await scheduler.get_schedule()
+                all_ids = [r.segment_id for r in rows]
+                if all_ids:
+                    await scheduler.log_clean(all_ids, mode, source="dashboard")
+            return {"ok": True}
+        if name not in _ACTIONS:
+            raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: start, {list(_ACTIONS)}")
+        await _ACTIONS[name](_get_client())
         return {"ok": True}
-    if name not in _ACTIONS:
-        raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: start, {list(_ACTIONS)}")
-    await _ACTIONS[name](_get_client())
-    return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.post("/api/consumables/reset/{attribute}")
@@ -199,8 +225,13 @@ async def api_consumables_reset(attribute: str):
 
 @app.post("/api/routine/{name}")
 async def api_routine(name: str):
-    await _get_client().run_routine(name)
-    return {"ok": True}
+    try:
+        await _get_client().run_routine(name)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 class RoomsCleanRequest(BaseModel):
@@ -214,14 +245,19 @@ class RoomsCleanRequest(BaseModel):
 
 @app.post("/api/rooms/clean")
 async def api_rooms_clean(body: RoomsCleanRequest):
-    fan_speed, mop_mode, water_flow, route = _parse_settings(body.model_dump())
-    await _get_client().clean_rooms(
-        body.segment_ids, repeat=body.repeat,
-        fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route,
-    )
-    mode = "both" if (body.water_flow and body.water_flow != "OFF") else "vacuum"
-    await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
-    return {"ok": True}
+    try:
+        fan_speed, mop_mode, water_flow, route = _parse_settings(body.model_dump())
+        await _get_client().clean_rooms(
+            body.segment_ids, repeat=body.repeat,
+            fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route,
+        )
+        mode = "both" if (body.water_flow and body.water_flow != "OFF") else "vacuum"
+        await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +698,7 @@ async function loadStatus() {
   const el = document.getElementById('status-content');
   try {
     const d = await fetch('/api/status').then(r => r.json());
+    if (d.error) { el.innerHTML = `<span class="unavailable">Error: ${d.error}</span>`; return; }
 
     const stateColor = d.state && d.state.toLowerCase().includes('clean') ? 'badge-blue'
       : d.state === 'charging' || d.state === 'charging_complete' ? 'badge-green'
@@ -704,6 +741,13 @@ async function loadRooms() {
   const checkEl = document.getElementById('room-check-list');
   try {
     _rooms = await fetch('/api/rooms').then(r => r.json());
+    if (!Array.isArray(_rooms)) {
+      const msg = _rooms.error || 'Unavailable';
+      el.innerHTML = `<span class="unavailable">Error: ${msg}</span>`;
+      checkEl.innerHTML = `<span class="unavailable">Error: ${msg}</span>`;
+      _rooms = [];
+      return;
+    }
     if (!_rooms.length) {
       el.innerHTML = '<span class="unavailable">No rooms found.</span>';
       checkEl.innerHTML = '<span class="unavailable">No rooms found.</span>';
@@ -754,6 +798,10 @@ async function loadRoutines() {
   const el = document.getElementById('routines-content');
   try {
     const routines = await fetch('/api/routines').then(r => r.json());
+    if (!Array.isArray(routines)) {
+      el.innerHTML = `<span class="unavailable">Error: ${routines.error || 'Unavailable'}</span>`;
+      return;
+    }
     if (!routines.length) {
       el.innerHTML = '<span class="unavailable">No routines found.</span>';
       return;
@@ -805,6 +853,7 @@ async function doAction(name) {
 async function loadSettings() {
   try {
     const s = await fetch('/api/settings').then(r => r.json());
+    if (s.error) { document.getElementById('settings-feedback').textContent = `Could not load settings: ${s.error}`; return; }
     populateSelect('set-fan-speed',  ['QUIET','BALANCED','TURBO','MAX','MAX_PLUS','OFF','SMART'], s.fan_speed);
     populateSelect('set-mop-mode',   ['STANDARD','FAST','DEEP','DEEP_PLUS','SMART'], s.mop_mode);
     populateSelect('set-water-flow', ['OFF','LOW','MEDIUM','HIGH','EXTREME','SMART'], s.water_flow);
