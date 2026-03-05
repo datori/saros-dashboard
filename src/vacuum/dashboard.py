@@ -266,6 +266,15 @@ def _parse_settings(data: dict) -> tuple[FanSpeed | None, MopMode | None, WaterF
     return fan_speed, mop_mode, water_flow, route
 
 
+def _infer_clean_mode(fan_speed_str: str | None, water_flow_str: str | None) -> str:
+    """Infer scheduler mode from raw string values before enum parsing."""
+    if fan_speed_str == "OFF":
+        return "mop"
+    if water_flow_str and water_flow_str != "OFF":
+        return "both"
+    return "vacuum"
+
+
 @app.get("/api/settings")
 async def api_settings_get():
     try:
@@ -313,9 +322,9 @@ async def api_action(name: str, body: StartCleanRequest | None = None):
             data = body.model_dump() if body else {}
             fan_speed, mop_mode, water_flow, route = _parse_settings(data)
             await _get_client().start_clean(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
-            # Log whole-home clean if water_flow is present
-            if body and body.water_flow:
-                mode = "both" if body.water_flow != "OFF" else "vacuum"
+            # Log whole-home clean when any settings are present
+            if body and (body.fan_speed or body.water_flow):
+                mode = _infer_clean_mode(body.fan_speed, body.water_flow)
                 rows = await scheduler.get_schedule()
                 all_ids = [r.segment_id for r in rows]
                 if all_ids:
@@ -370,7 +379,7 @@ async def api_rooms_clean(body: RoomsCleanRequest):
             body.segment_ids, repeat=body.repeat,
             fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route,
         )
-        mode = "both" if (body.water_flow and body.water_flow != "OFF") else "vacuum"
+        mode = _infer_clean_mode(body.fan_speed, body.water_flow)
         await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
         _cache_invalidate("status")
         return {"ok": True}
@@ -644,6 +653,29 @@ _HTML = """<!DOCTYPE html>
       <button class="btn btn-neutral" onclick="doAction('dock')">⏏ Dock</button>
       <button class="btn btn-neutral" onclick="doAction('locate')">🔔 Locate</button>
     </div>
+    <div style="margin-top:12px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Start clean overrides (optional)</div>
+      <div class="settings-grid">
+        <div class="settings-row">
+          <span class="settings-label">Clean Mode</span>
+          <select id="start-clean-mode" onchange="applyCleanMode('start', this.value)">
+            <option value="">— no preference —</option>
+            <option value="vacuum">Vacuum only</option>
+            <option value="mop">Mop only</option>
+            <option value="both">Both (simultaneous)</option>
+            <option value="vac_then_mop">Vacuum, then Mop</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Fan Speed</span>
+          <select id="start-fan-speed"><option value="">— device default —</option><option>QUIET</option><option>BALANCED</option><option>TURBO</option><option>MAX</option><option>MAX_PLUS</option><option>OFF</option></select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Water Flow</span>
+          <select id="start-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option><option>VAC_THEN_MOP</option></select>
+        </div>
+      </div>
+    </div>
     <div class="feedback" id="action-feedback"></div>
   </div>
 
@@ -666,6 +698,16 @@ _HTML = """<!DOCTYPE html>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Override settings (optional)</div>
       <div class="settings-grid">
         <div class="settings-row">
+          <span class="settings-label">Clean Mode</span>
+          <select id="rooms-clean-mode" onchange="applyCleanMode('rooms', this.value)">
+            <option value="">— no preference —</option>
+            <option value="vacuum">Vacuum only</option>
+            <option value="mop">Mop only</option>
+            <option value="both">Both (simultaneous)</option>
+            <option value="vac_then_mop">Vacuum, then Mop</option>
+          </select>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Fan Speed</span>
           <select id="rooms-fan-speed"><option value="">— device default —</option><option>QUIET</option><option>BALANCED</option><option>TURBO</option><option>MAX</option><option>MAX_PLUS</option><option>OFF</option></select>
         </div>
@@ -675,7 +717,7 @@ _HTML = """<!DOCTYPE html>
         </div>
         <div class="settings-row">
           <span class="settings-label">Water Flow</span>
-          <select id="rooms-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option></select>
+          <select id="rooms-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option><option>VAC_THEN_MOP</option></select>
         </div>
         <div class="settings-row">
           <span class="settings-label">Route</span>
@@ -953,13 +995,43 @@ async function runRoutine(btn, name) {
   }
 }
 
+// ------------------------------------------------------------------ clean mode
+function applyCleanMode(prefix, mode) {
+  const fs = document.getElementById(prefix + '-fan-speed');
+  const wf = document.getElementById(prefix + '-water-flow');
+  if (!fs || !wf) return;
+  if (mode === 'vacuum') {
+    fs.value = '';
+    wf.value = 'OFF';
+  } else if (mode === 'mop') {
+    fs.value = 'OFF';
+    wf.value = '';
+  } else if (mode === 'both') {
+    fs.value = '';
+    wf.value = '';
+  } else if (mode === 'vac_then_mop') {
+    fs.value = '';
+    wf.value = 'VAC_THEN_MOP';
+  } else {
+    fs.value = '';
+    wf.value = '';
+  }
+}
+
 // ------------------------------------------------------------------ actions
 async function doAction(name) {
   const btns = document.querySelectorAll('.actions-grid .btn');
   btns.forEach(b => b.disabled = true);
   setFeedback('action-feedback', '');
   try {
-    const res = await apiPost('/api/action/' + name, {});
+    let body = {};
+    if (name === 'start') {
+      const fs = document.getElementById('start-fan-speed').value;
+      const wf = document.getElementById('start-water-flow').value;
+      if (fs) body.fan_speed = fs;
+      if (wf) body.water_flow = wf;
+    }
+    const res = await apiPost('/api/action/' + name, body);
     setFeedback('action-feedback', res.ok ? `${name} sent!` : (res.detail || 'Error'), !res.ok);
     if (name !== 'locate') setTimeout(loadStatus, 2000);
   } catch(e) {
@@ -976,7 +1048,7 @@ async function loadSettings() {
     if (s.error) { document.getElementById('settings-feedback').textContent = `Could not load settings: ${s.error}`; return; }
     populateSelect('set-fan-speed',  ['QUIET','BALANCED','TURBO','MAX','MAX_PLUS','OFF','SMART'], s.fan_speed);
     populateSelect('set-mop-mode',   ['STANDARD','FAST','DEEP','DEEP_PLUS','SMART'], s.mop_mode);
-    populateSelect('set-water-flow', ['OFF','LOW','MEDIUM','HIGH','EXTREME','SMART'], s.water_flow);
+    populateSelect('set-water-flow', ['OFF','LOW','MEDIUM','HIGH','EXTREME','VAC_THEN_MOP','SMART'], s.water_flow);
   } catch(e) {
     document.getElementById('settings-feedback').textContent = 'Could not load settings.';
   }

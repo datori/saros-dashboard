@@ -50,12 +50,13 @@ class MopMode(IntEnum):
 
 
 class WaterFlow(IntEnum):
-    OFF     = 200
-    LOW     = 201
-    MEDIUM  = 202
-    HIGH    = 203
-    EXTREME = 250
-    SMART   = 209
+    OFF          = 200
+    LOW          = 201
+    MEDIUM       = 202
+    HIGH         = 203
+    EXTREME      = 250
+    SMART        = 209
+    VAC_THEN_MOP = 235  # Sequential: vacuum first, then mop
 
 
 class CleanRoute(IntEnum):
