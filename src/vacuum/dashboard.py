@@ -223,16 +223,16 @@ _HTML = """<!DOCTYPE html>
 <title>Vacuum Dashboard</title>
 <style>
   :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --border: #2a2d3a;
+    --bg: #22272e;
+    --surface: #2d333b;
+    --border: #444c56;
     --accent: #4f8ef7;
     --accent2: #7c3aed;
     --green: #22c55e;
     --yellow: #eab308;
     --red: #ef4444;
-    --text: #e2e8f0;
-    --muted: #64748b;
+    --text: #adbac7;
+    --muted: #768390;
     --radius: 12px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -288,10 +288,10 @@ _HTML = """<!DOCTYPE html>
     font-size: 11px;
     font-weight: 600;
   }
-  .badge-green { background: #14532d; color: var(--green); }
-  .badge-yellow { background: #422006; color: var(--yellow); }
-  .badge-red { background: #450a0a; color: var(--red); }
-  .badge-blue { background: #1e3a5f; color: var(--accent); }
+  .badge-green { background: #1e3a2a; color: var(--green); }
+  .badge-yellow { background: #3d2c00; color: var(--yellow); }
+  .badge-red { background: #3d1515; color: var(--red); }
+  .badge-blue { background: #243d5e; color: var(--accent); }
   .badge-gray { background: var(--border); color: var(--muted); }
   .progress-wrap { margin: 8px 0; }
   .progress-label { display: flex; justify-content: space-between; margin-bottom: 4px; }
