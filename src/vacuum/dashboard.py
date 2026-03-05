@@ -23,6 +23,9 @@ from . import scheduler
 # ---------------------------------------------------------------------------
 
 _client: VacuumClient | None = None
+_client_failures: int = 0
+_reconnect_lock: asyncio.Lock = asyncio.Lock()
+_MAX_FAILURES_BEFORE_RECONNECT = 3
 
 # ---------------------------------------------------------------------------
 # Response cache
@@ -33,7 +36,8 @@ _cache_locks: dict[str, asyncio.Lock] = {}
 
 
 async def _cached(key: str, ttl: float, fn):
-    """Return cached result if fresh, else call fn() and cache the result."""
+    """Return cached result if fresh, else call fn() and cache the result.
+    Tracks device call success/failure to drive auto-reconnect."""
     now = time.monotonic()
     if key in _cache:
         ts, val = _cache[key]
@@ -47,7 +51,15 @@ async def _cached(key: str, ttl: float, fn):
             ts, val = _cache[key]
             if now - ts < ttl:
                 return val
-        result = await fn()
+        await _maybe_reconnect()
+        try:
+            result = await fn()
+        except Exception:
+            if _record_failure():
+                # Schedule a background reconnect for the next request
+                asyncio.ensure_future(_maybe_reconnect())
+            raise
+        _record_success()
         _cache[key] = (time.monotonic(), result)
         return result
 
@@ -85,6 +97,48 @@ def _get_client() -> VacuumClient:
     if _client is None:
         raise HTTPException(status_code=503, detail="Vacuum client not ready")
     return _client
+
+
+def _record_success() -> None:
+    global _client_failures
+    _client_failures = 0
+
+
+def _record_failure() -> bool:
+    """Increment failure count. Returns True if reconnect threshold is reached."""
+    global _client_failures
+    _client_failures += 1
+    return _client_failures >= _MAX_FAILURES_BEFORE_RECONNECT
+
+
+async def _maybe_reconnect() -> None:
+    """Recreate the VacuumClient if failure threshold has been reached."""
+    global _client, _client_failures
+    if _client_failures < _MAX_FAILURES_BEFORE_RECONNECT:
+        return
+    if _reconnect_lock.locked():
+        return  # Another coroutine is already reconnecting
+    async with _reconnect_lock:
+        if _client_failures < _MAX_FAILURES_BEFORE_RECONNECT:
+            return  # Already reset by a concurrent reconnect
+        import logging
+        log = logging.getLogger("vacuum")
+        log.warning("Reconnecting VacuumClient after %d consecutive failures", _client_failures)
+        try:
+            if _client:
+                await _client.close()
+        except Exception:
+            pass
+        _client = None
+        _cache.clear()
+        try:
+            new_client = VacuumClient()
+            await new_client.authenticate()
+            _client = new_client
+            _client_failures = 0
+            log.info("VacuumClient reconnected successfully")
+        except Exception as e:
+            log.error("Reconnect failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
