@@ -59,14 +59,41 @@ status = await client.get_status()
 - `in_dock`: derived — true when state code is 8 (charging) or 100 (charging_complete)
 - `error_code`: integer, 0 = no error
 
+### Cleaning Parameter Enums
+
+```python
+from vacuum.client import FanSpeed, MopMode, WaterFlow, CleanRoute
+```
+
+| Enum | Members | Device command |
+|------|---------|---------------|
+| `FanSpeed` | `OFF`, `QUIET`, `BALANCED`, `TURBO`, `MAX`, `MAX_PLUS`, `SMART` | `SET_CUSTOM_MODE` |
+| `MopMode` | `STANDARD`, `FAST`, `DEEP`, `DEEP_PLUS`, `SMART` | `SET_MOP_MODE` |
+| `WaterFlow` | `OFF`, `LOW`, `MEDIUM`, `HIGH`, `EXTREME`, `SMART` | `SET_WATER_BOX_CUSTOM_MODE` |
+| `CleanRoute` | `STANDARD`, `FAST`, `DEEP`, `DEEP_PLUS`, `SMART` | `SET_MOP_MODE` (same command as MopMode) |
+
 ### Control
 
 ```python
-await client.start_clean()
+# All settings params are optional — None means "use device default"
+await client.start_clean(fan_speed=FanSpeed.TURBO, water_flow=WaterFlow.HIGH)
 await client.pause()
 await client.stop()
 await client.return_to_dock()
 await client.locate()           # plays locate sound
+```
+
+### Cleaning Settings
+
+```python
+# Read current device defaults
+settings = await client.get_current_settings()
+# CleanSettings(fan_speed=FanSpeed.BALANCED, mop_mode=MopMode.STANDARD, water_flow=WaterFlow.MEDIUM)
+
+# Persist device-level defaults (without starting a clean)
+await client.set_fan_speed(FanSpeed.MAX)
+await client.set_mop_mode(MopMode.DEEP)
+await client.set_water_flow(WaterFlow.HIGH)
 ```
 
 ### Rooms
@@ -94,8 +121,9 @@ mapping = await client.rooms_by_name()
 ### Room / Zone Cleaning
 
 ```python
-await client.clean_rooms([1, 4], repeat=1)   # segment IDs
-await client.clean_zones([(x1,y1,x2,y2)], repeat=1)
+# All settings params optional; SET_* commands are issued before the clean command
+await client.clean_rooms([1, 4], repeat=1, fan_speed=FanSpeed.TURBO, mop_mode=MopMode.DEEP)
+await client.clean_zones([(x1,y1,x2,y2)], repeat=1, water_flow=WaterFlow.HIGH)
 ```
 
 ### Routines (Scenes)
@@ -127,12 +155,17 @@ c = await client.get_consumables()
 
 ```python
 records = await client.get_clean_history(limit=10)
-# [CleanRecord(start_time, duration_seconds, area_m2, complete), ...]
+# [CleanRecord(start_time, duration_seconds, area_m2, complete,
+#              start_type, clean_type, finish_reason, avoid_count, wash_count), ...]
 ```
 
 - `start_time`: ISO 8601 UTC string (from Unix timestamp `r.begin`)
 - `area_m2`: from `r.square_meter_area` (already in m²)
 - `complete`: bool (False = interrupted)
+- `start_type`: string name e.g. `"app"`, `"schedule"`, `"routines"` (or `None`)
+- `clean_type`: string name e.g. `"all_zone"`, `"select_zone"` (or `None`)
+- `finish_reason`: string name e.g. `"finished_cleaning"`, `"manual_interrupt"` (or `None`)
+- `avoid_count`, `wash_count`: ints (or `None`)
 - The library returns `records` as a list of integer record IDs from `clean_summary` — each must be fetched individually via `get_clean_record(id)`
 
 ## Dashboard API Endpoints
@@ -146,10 +179,12 @@ The FastAPI dashboard (`dashboard.py`) exposes these endpoints:
 | GET | `/api/rooms` | `[{id, name}, ...]` |
 | GET | `/api/routines` | `["name", ...]` |
 | GET | `/api/consumables` | `{main_brush_pct, side_brush_pct, filter_pct, sensor_pct}` |
-| GET | `/api/history` | `[{start_time, duration_seconds, area_m2, complete}, ...]` |
-| POST | `/api/action/{name}` | `name` ∈ {start, stop, pause, dock, locate} |
+| GET | `/api/history` | `[{start_time, duration_seconds, area_m2, complete, start_type, clean_type, finish_reason, avoid_count, wash_count}, ...]` |
+| GET | `/api/settings` | `{fan_speed, mop_mode, water_flow}` as enum name strings |
+| POST | `/api/settings` | Body: `{fan_speed?, mop_mode?, water_flow?}` — sets device defaults |
+| POST | `/api/action/{name}` | `name` ∈ {start, stop, pause, dock, locate}; `start` accepts optional body `{fan_speed?, mop_mode?, water_flow?, route?}` |
 | POST | `/api/routine/{name}` | Run named routine |
-| POST | `/api/rooms/clean` | Body: `{segment_ids: int[], repeat: int}` |
+| POST | `/api/rooms/clean` | Body: `{segment_ids: int[], repeat: int, fan_speed?, mop_mode?, water_flow?, route?}` |
 
 ## Key Discoveries / Gotchas
 

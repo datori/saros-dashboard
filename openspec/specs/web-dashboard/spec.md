@@ -52,11 +52,11 @@ The system SHALL display a panel showing consumable life percentages (main brush
 - **THEN** the panel SHALL display "Unavailable" without crashing the rest of the UI
 
 ### Requirement: Clean history panel
-The system SHALL display the last 10 cleaning jobs with start time, duration, and area cleaned.
+The system SHALL display the last 10 cleaning jobs with start time, duration, area, completion, start type, clean type, and finish reason.
 
-#### Scenario: History displayed
+#### Scenario: History displayed with enriched fields
 - **WHEN** the dashboard loads
-- **THEN** the clean history panel SHALL show a table of recent jobs from `/api/history`
+- **THEN** the clean history panel SHALL show a table with columns: start time, duration, area, complete, start type, clean type, finish reason
 
 #### Scenario: History unavailable
 - **WHEN** the history API call fails
@@ -115,6 +115,14 @@ The system SHALL expose REST API endpoints consumed by the frontend.
 - **WHEN** POST `/api/rooms/clean` is called with `{segment_ids: [...], repeat: n}`
 - **THEN** `clean_rooms(segment_ids, repeat)` SHALL be called and `{ok: true}` returned on success
 
+#### Scenario: GET /api/settings
+- **WHEN** GET `/api/settings` is called
+- **THEN** the response SHALL return JSON with `fan_speed`, `mop_mode`, `water_flow` as string enum names or `null` if unrecognized
+
+#### Scenario: POST /api/settings
+- **WHEN** POST `/api/settings` is called with `{"fan_speed": "TURBO", "mop_mode": "DEEP"}`
+- **THEN** the corresponding setters SHALL be called and `{ok: true}` returned
+
 #### Scenario: POST /api/consumables/reset/{attribute}
 - **WHEN** `POST /api/consumables/reset/{attribute}` is called with a valid attribute name
 - **THEN** `client.reset_consumable(attribute)` SHALL be called and `{ok: true}` returned
@@ -141,3 +149,29 @@ The system SHALL display a "Reset" button next to each consumable progress bar i
 #### Scenario: Reset error feedback
 - **WHEN** the API call fails
 - **THEN** an error message SHALL be displayed without crashing the UI
+
+### Requirement: Settings panel in dashboard UI
+The system SHALL display a "Clean Settings" panel with dropdowns for fan speed, mop mode, water flow, and route, populated from `/api/settings` and with a "Save Settings" button.
+
+#### Scenario: Panel loads with current settings
+- **WHEN** the dashboard loads
+- **THEN** the settings panel SHALL show the current device settings fetched from `GET /api/settings`
+
+#### Scenario: Save settings
+- **WHEN** the user changes a dropdown and clicks "Save Settings"
+- **THEN** the dashboard SHALL POST to `/api/settings` and show success or error feedback
+
+### Requirement: Clean actions accept inline settings
+The system SHALL accept optional `fan_speed`, `mop_mode`, `water_flow`, and `route` in the `POST /api/rooms/clean` and `POST /api/action/start` request bodies.
+
+#### Scenario: Room clean with inline settings
+- **WHEN** `POST /api/rooms/clean` is called with `{"segment_ids": [1], "repeat": 1, "fan_speed": "TURBO"}`
+- **THEN** `clean_rooms()` SHALL be called with `fan_speed=FanSpeed.TURBO`
+
+#### Scenario: Start clean with inline settings
+- **WHEN** `POST /api/action/start` is called with body `{"fan_speed": "QUIET", "mop_mode": "FAST"}`
+- **THEN** `start_clean()` SHALL be called with those settings
+
+#### Scenario: Missing settings fields use device defaults
+- **WHEN** `POST /api/rooms/clean` is called without settings fields
+- **THEN** `clean_rooms()` SHALL be called with no settings arguments (device defaults apply)

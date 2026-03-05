@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Any
 
 from roborock.data import (
@@ -24,6 +25,52 @@ from roborock.roborock_typing import RoborockCommand
 from roborock.web_api import RoborockApiClient
 
 from .config import ConfigError, get_device_name, get_username, load_session, save_session
+
+
+# ---------------------------------------------------------------------------
+# Cleaning parameter enums (Saros 10R device codes)
+# ---------------------------------------------------------------------------
+
+class FanSpeed(IntEnum):
+    OFF      = 105  # Mop-only mode (no vacuuming)
+    QUIET    = 101
+    BALANCED = 102
+    TURBO    = 103
+    MAX      = 104
+    MAX_PLUS = 108
+    SMART    = 110
+
+
+class MopMode(IntEnum):
+    STANDARD  = 300
+    DEEP      = 301
+    DEEP_PLUS = 303
+    FAST      = 304
+    SMART     = 306
+
+
+class WaterFlow(IntEnum):
+    OFF     = 200
+    LOW     = 201
+    MEDIUM  = 202
+    HIGH    = 203
+    EXTREME = 250
+    SMART   = 209
+
+
+class CleanRoute(IntEnum):
+    """Vacuum route pattern. Maps to the same SET_MOP_MODE command as MopMode."""
+    STANDARD  = 300
+    FAST      = 304
+    DEEP      = 301
+    DEEP_PLUS = 303
+    SMART     = 306
+
+
+# Reverse-lookup: device integer code → our enum member (or None if unknown)
+_FAN_SPEED_BY_CODE  = {e.value: e for e in FanSpeed}
+_MOP_MODE_BY_CODE   = {e.value: e for e in MopMode}
+_WATER_FLOW_BY_CODE = {e.value: e for e in WaterFlow}
 
 
 def _extract_cached_base_url(session: dict) -> str | None:
@@ -78,11 +125,30 @@ class Consumables:
 
 
 @dataclass
+class CleanSettings:
+    fan_speed: FanSpeed | None
+    mop_mode: MopMode | None
+    water_flow: WaterFlow | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "fan_speed": self.fan_speed.name if self.fan_speed is not None else None,
+            "mop_mode": self.mop_mode.name if self.mop_mode is not None else None,
+            "water_flow": self.water_flow.name if self.water_flow is not None else None,
+        }
+
+
+@dataclass
 class CleanRecord:
     start_time: str | None
     duration_seconds: int | None
     area_m2: float | None
     complete: bool
+    start_type: str | None = None
+    clean_type: str | None = None
+    finish_reason: str | None = None
+    avoid_count: int | None = None
+    wash_count: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +156,11 @@ class CleanRecord:
             "duration_seconds": self.duration_seconds,
             "area_m2": self.area_m2,
             "complete": self.complete,
+            "start_type": self.start_type,
+            "clean_type": self.clean_type,
+            "finish_reason": self.finish_reason,
+            "avoid_count": self.avoid_count,
+            "wash_count": self.wash_count,
         }
 
 
@@ -217,8 +288,33 @@ class VacuumClient:
     # Basic control
     # -------------------------------------------------------------------------
 
-    async def start_clean(self) -> None:
+    async def _apply_settings(
+        self,
+        v1,
+        fan_speed: FanSpeed | None = None,
+        mop_mode: MopMode | None = None,
+        water_flow: WaterFlow | None = None,
+        route: CleanRoute | None = None,
+    ) -> None:
+        """Issue SET_* commands for any non-None settings before a clean command."""
+        if fan_speed is not None:
+            await v1.command.send(RoborockCommand.SET_CUSTOM_MODE, [fan_speed.value])
+        # mop_mode takes precedence over route when both are provided (they share SET_MOP_MODE)
+        effective_mode = mop_mode if mop_mode is not None else route
+        if effective_mode is not None:
+            await v1.command.send(RoborockCommand.SET_MOP_MODE, [int(effective_mode)])
+        if water_flow is not None:
+            await v1.command.send(RoborockCommand.SET_WATER_BOX_CUSTOM_MODE, [water_flow.value])
+
+    async def start_clean(
+        self,
+        fan_speed: FanSpeed | None = None,
+        mop_mode: MopMode | None = None,
+        water_flow: WaterFlow | None = None,
+        route: CleanRoute | None = None,
+    ) -> None:
         v1 = await self._v1()
+        await self._apply_settings(v1, fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
         await v1.command.send(RoborockCommand.APP_START)
 
     async def pause(self) -> None:
@@ -241,15 +337,33 @@ class VacuumClient:
     # Room and zone cleaning
     # -------------------------------------------------------------------------
 
-    async def clean_rooms(self, segment_ids: list[int], repeat: int = 1) -> None:
+    async def clean_rooms(
+        self,
+        segment_ids: list[int],
+        repeat: int = 1,
+        fan_speed: FanSpeed | None = None,
+        mop_mode: MopMode | None = None,
+        water_flow: WaterFlow | None = None,
+        route: CleanRoute | None = None,
+    ) -> None:
         """Clean specific rooms by segment ID."""
         v1 = await self._v1()
+        await self._apply_settings(v1, fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
         params = [{"segments": segment_ids, "repeat": repeat, "clean_order_mode": 0}]
         await v1.command.send(RoborockCommand.APP_SEGMENT_CLEAN, params)
 
-    async def clean_zones(self, zones: list[tuple[int, int, int, int]], repeat: int = 1) -> None:
+    async def clean_zones(
+        self,
+        zones: list[tuple[int, int, int, int]],
+        repeat: int = 1,
+        fan_speed: FanSpeed | None = None,
+        mop_mode: MopMode | None = None,
+        water_flow: WaterFlow | None = None,
+        route: CleanRoute | None = None,
+    ) -> None:
         """Clean rectangular zones. Each zone is (x1, y1, x2, y2)."""
         v1 = await self._v1()
+        await self._apply_settings(v1, fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
         zone_params = [list(z) + [repeat] for z in zones]
         await v1.command.send(RoborockCommand.APP_ZONED_CLEAN, [{"zones": zone_params}])
 
@@ -322,11 +436,43 @@ class VacuumClient:
     _CONSUMABLE_ATTRIBUTES = {a.value for a in ConsumableAttribute}
 
     async def reset_consumable(self, attribute: str) -> None:
+
         """Reset a consumable timer by attribute name."""
         if attribute not in self._CONSUMABLE_ATTRIBUTES:
             raise ValueError(f"Unknown consumable attribute: {attribute!r}. Valid: {sorted(self._CONSUMABLE_ATTRIBUTES)}")
         v1 = await self._v1()
         await v1.consumables.reset_consumable(ConsumableAttribute(attribute))
+
+    # -------------------------------------------------------------------------
+    # Cleaning settings — setters and getter
+    # -------------------------------------------------------------------------
+
+    async def set_fan_speed(self, speed: FanSpeed) -> None:
+        """Persist fan speed as the device default (without starting a clean)."""
+        v1 = await self._v1()
+        await v1.command.send(RoborockCommand.SET_CUSTOM_MODE, [speed.value])
+
+    async def set_mop_mode(self, mode: MopMode) -> None:
+        """Persist mop/route mode as the device default."""
+        v1 = await self._v1()
+        await v1.command.send(RoborockCommand.SET_MOP_MODE, [mode.value])
+
+    async def set_water_flow(self, flow: WaterFlow) -> None:
+        """Persist water flow level as the device default."""
+        v1 = await self._v1()
+        await v1.command.send(RoborockCommand.SET_WATER_BOX_CUSTOM_MODE, [flow.value])
+
+    async def get_current_settings(self) -> CleanSettings:
+        """Return the device's currently active fan speed, mop mode, and water flow."""
+        v1 = await self._v1()
+        await v1.status.refresh()
+        s = v1.status
+
+        fan_speed  = _FAN_SPEED_BY_CODE.get(int(s.fan_power)) if s.fan_power is not None else None
+        mop_mode   = _MOP_MODE_BY_CODE.get(int(s.mop_mode)) if s.mop_mode is not None else None
+        water_flow = _WATER_FLOW_BY_CODE.get(int(s.water_box_mode)) if s.water_box_mode is not None else None
+
+        return CleanSettings(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow)
 
     # -------------------------------------------------------------------------
     # Clean history
@@ -346,12 +492,23 @@ class VacuumClient:
                     if r.begin
                     else None
                 )
+                def _enum_name(val) -> str | None:
+                    try:
+                        return val.name if val is not None else None
+                    except AttributeError:
+                        return None
+
                 records.append(
                     CleanRecord(
                         start_time=start,
                         duration_seconds=r.duration,
                         area_m2=r.square_meter_area,
                         complete=bool(r.complete),
+                        start_type=_enum_name(getattr(r, "start_type", None)),
+                        clean_type=_enum_name(getattr(r, "clean_type", None)),
+                        finish_reason=_enum_name(getattr(r, "finish_reason", None)),
+                        avoid_count=getattr(r, "avoid_count", None),
+                        wash_count=getattr(r, "wash_count", None),
                     )
                 )
             except Exception:

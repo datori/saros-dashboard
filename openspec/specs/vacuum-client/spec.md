@@ -27,11 +27,15 @@ The system SHALL retrieve the current status of the vacuum, including cleaning s
 - **THEN** the response SHALL include current state, area cleaned, and elapsed time
 
 ### Requirement: Basic vacuum control commands
-The system SHALL support start, stop, pause, and return-to-dock commands dispatched to the vacuum via the cloud API.
+The system SHALL support start, stop, pause, and return-to-dock commands, with `start_clean()` accepting optional fan speed, mop mode, water flow, and route parameters.
 
-#### Scenario: Start full clean
-- **WHEN** `start_clean()` is called
-- **THEN** the vacuum SHALL begin a full home cleaning session
+#### Scenario: Start full clean with defaults
+- **WHEN** `start_clean()` is called with no settings arguments
+- **THEN** the vacuum SHALL begin a full home cleaning session using current device settings
+
+#### Scenario: Start full clean with settings
+- **WHEN** `start_clean(fan_speed=FanSpeed.MAX, water_flow=WaterFlow.HIGH)` is called
+- **THEN** `SET_CUSTOM_MODE` and `SET_WATER_BOX_CUSTOM_MODE` SHALL be sent before `APP_START`
 
 #### Scenario: Pause cleaning
 - **WHEN** `pause()` is called during an active session
@@ -42,22 +46,38 @@ The system SHALL support start, stop, pause, and return-to-dock commands dispatc
 - **THEN** the vacuum SHALL stop any active cleaning and return to its charging dock
 
 ### Requirement: Room cleaning by segment ID
-The system SHALL support cleaning one or more specific rooms identified by their segment IDs, with configurable repeat count.
+The system SHALL support cleaning one or more specific rooms identified by their segment IDs, with configurable repeat count, fan speed, mop mode, water flow, and route pattern.
 
 #### Scenario: Single room clean
 - **WHEN** `clean_rooms(segment_ids=[n], repeat=1)` is called
 - **THEN** the vacuum SHALL clean only the specified room segment
 
-#### Scenario: Multi-room clean with repeats
+#### Scenario: Multi-room with repeats
 - **WHEN** `clean_rooms(segment_ids=[n, m], repeat=2)` is called
 - **THEN** the vacuum SHALL clean both segments, each passed twice
 
+#### Scenario: Room clean with fan speed
+- **WHEN** `clean_rooms(segment_ids=[n], fan_speed=FanSpeed.TURBO)` is called
+- **THEN** `SET_CUSTOM_MODE` SHALL be sent before `APP_SEGMENT_CLEAN`
+
+#### Scenario: Room clean with mop settings
+- **WHEN** `clean_rooms(segment_ids=[n], mop_mode=MopMode.DEEP, water_flow=WaterFlow.HIGH)` is called
+- **THEN** both `SET_MOP_MODE` and `SET_WATER_BOX_CUSTOM_MODE` SHALL be sent before `APP_SEGMENT_CLEAN`
+
+#### Scenario: None settings are no-ops
+- **WHEN** a setting parameter is `None`
+- **THEN** no `SET_*` command SHALL be issued for that setting
+
 ### Requirement: Zone cleaning by coordinates
-The system SHALL support cleaning rectangular zones defined by coordinate pairs.
+The system SHALL support cleaning rectangular zones defined by coordinate pairs, with configurable repeat count, fan speed, mop mode, water flow, and route pattern.
 
 #### Scenario: Single zone clean
 - **WHEN** `clean_zones(zones=[(x1, y1, x2, y2)], repeat=1)` is called
 - **THEN** the vacuum SHALL clean the defined rectangular area
+
+#### Scenario: Zone clean with fan speed
+- **WHEN** `clean_zones(zones=[(x1, y1, x2, y2)], fan_speed=FanSpeed.QUIET)` is called
+- **THEN** `SET_CUSTOM_MODE` SHALL be sent before `APP_ZONED_CLEAN`
 
 ### Requirement: Map and room discovery
 The system SHALL retrieve map data including segment IDs and their names to support room-based automation.
@@ -96,11 +116,11 @@ The system SHALL retrieve consumable usage data including main brush, side brush
 - **THEN** the method SHALL raise a descriptive exception rather than return partial data
 
 ### Requirement: Clean history retrieval
-The system SHALL retrieve a list of recent cleaning job records including start time, duration, and area.
+The system SHALL retrieve a list of recent cleaning job records including start time, duration, area, completion status, start type, clean type, finish reason, avoid count, and wash count.
 
-#### Scenario: History returned
+#### Scenario: History returned with enriched fields
 - **WHEN** `get_clean_history(limit=10)` is called
-- **THEN** the response SHALL include up to 10 recent cleaning records with start time, duration in seconds, and area in cm²
+- **THEN** the response SHALL include up to 10 recent records; each SHALL include `start_type`, `clean_type`, `finish_reason`, `avoid_count`, `wash_count` where available from the library
 
 #### Scenario: No history available
 - **WHEN** `get_clean_history()` is called and no records exist

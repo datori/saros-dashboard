@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import typer
 
-from .client import VacuumClient
+from .client import CleanRoute, FanSpeed, MopMode, VacuumClient, WaterFlow
 
 # ---------------------------------------------------------------------------
 # App state
@@ -86,18 +86,93 @@ async def api_history():
 
 
 _ACTIONS = {
-    "start": lambda c: c.start_clean(),
-    "stop": lambda c: c.stop(),
-    "pause": lambda c: c.pause(),
-    "dock": lambda c: c.return_to_dock(),
-    "locate": lambda c: c.locate(),
+    "stop": lambda c, **_: c.stop(),
+    "pause": lambda c, **_: c.pause(),
+    "dock": lambda c, **_: c.return_to_dock(),
+    "locate": lambda c, **_: c.locate(),
 }
+
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+_FAN_SPEED_NAMES   = {e.name: e for e in FanSpeed}
+_MOP_MODE_NAMES    = {e.name: e for e in MopMode}
+_WATER_FLOW_NAMES  = {e.name: e for e in WaterFlow}
+_CLEAN_ROUTE_NAMES = {e.name: e for e in CleanRoute}
+
+
+def _parse_settings(data: dict) -> tuple[FanSpeed | None, MopMode | None, WaterFlow | None, CleanRoute | None]:
+    """Parse optional settings fields from a request dict. Raises HTTPException on invalid values."""
+    fan_speed  = None
+    mop_mode   = None
+    water_flow = None
+    route      = None
+
+    if (v := data.get("fan_speed")) is not None:
+        if v not in _FAN_SPEED_NAMES:
+            raise HTTPException(400, f"Invalid fan_speed '{v}'. Valid: {sorted(_FAN_SPEED_NAMES)}")
+        fan_speed = _FAN_SPEED_NAMES[v]
+
+    if (v := data.get("mop_mode")) is not None:
+        if v not in _MOP_MODE_NAMES:
+            raise HTTPException(400, f"Invalid mop_mode '{v}'. Valid: {sorted(_MOP_MODE_NAMES)}")
+        mop_mode = _MOP_MODE_NAMES[v]
+
+    if (v := data.get("water_flow")) is not None:
+        if v not in _WATER_FLOW_NAMES:
+            raise HTTPException(400, f"Invalid water_flow '{v}'. Valid: {sorted(_WATER_FLOW_NAMES)}")
+        water_flow = _WATER_FLOW_NAMES[v]
+
+    if (v := data.get("route")) is not None:
+        if v not in _CLEAN_ROUTE_NAMES:
+            raise HTTPException(400, f"Invalid route '{v}'. Valid: {sorted(_CLEAN_ROUTE_NAMES)}")
+        route = _CLEAN_ROUTE_NAMES[v]
+
+    return fan_speed, mop_mode, water_flow, route
+
+
+@app.get("/api/settings")
+async def api_settings_get():
+    s = await _get_client().get_current_settings()
+    return s.as_dict()
+
+
+class SettingsRequest(BaseModel):
+    fan_speed: str | None = None
+    mop_mode: str | None = None
+    water_flow: str | None = None
+
+
+@app.post("/api/settings")
+async def api_settings_post(body: SettingsRequest):
+    client = _get_client()
+    fan_speed, mop_mode, water_flow, _ = _parse_settings(body.model_dump(exclude_none=False))
+    if fan_speed is not None:
+        await client.set_fan_speed(fan_speed)
+    if mop_mode is not None:
+        await client.set_mop_mode(mop_mode)
+    if water_flow is not None:
+        await client.set_water_flow(water_flow)
+    return {"ok": True}
+
+
+class StartCleanRequest(BaseModel):
+    fan_speed: str | None = None
+    mop_mode: str | None = None
+    water_flow: str | None = None
+    route: str | None = None
 
 
 @app.post("/api/action/{name}")
-async def api_action(name: str):
+async def api_action(name: str, body: StartCleanRequest | None = None):
+    if name == "start":
+        data = body.model_dump() if body else {}
+        fan_speed, mop_mode, water_flow, route = _parse_settings(data)
+        await _get_client().start_clean(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
+        return {"ok": True}
     if name not in _ACTIONS:
-        raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: {list(_ACTIONS)}")
+        raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: start, {list(_ACTIONS)}")
     await _ACTIONS[name](_get_client())
     return {"ok": True}
 
@@ -120,11 +195,19 @@ async def api_routine(name: str):
 class RoomsCleanRequest(BaseModel):
     segment_ids: list[int]
     repeat: int = 1
+    fan_speed: str | None = None
+    mop_mode: str | None = None
+    water_flow: str | None = None
+    route: str | None = None
 
 
 @app.post("/api/rooms/clean")
 async def api_rooms_clean(body: RoomsCleanRequest):
-    await _get_client().clean_rooms(body.segment_ids, repeat=body.repeat)
+    fan_speed, mop_mode, water_flow, route = _parse_settings(body.model_dump())
+    await _get_client().clean_rooms(
+        body.segment_ids, repeat=body.repeat,
+        fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route,
+    )
     return {"ok": True}
 
 
@@ -286,6 +369,19 @@ _HTML = """<!DOCTYPE html>
   .loading { color: var(--muted); font-style: italic; }
   .unavailable { color: var(--muted); font-style: italic; }
   .last-updated { font-size: 11px; color: var(--muted); margin-top: 12px; }
+  select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 5px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  select:focus { outline: none; border-color: var(--accent); }
+  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .settings-row { display: flex; flex-direction: column; gap: 4px; }
+  .settings-label { font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -341,7 +437,51 @@ _HTML = """<!DOCTYPE html>
       <input type="number" id="repeat-count" value="1" min="1" max="3">
       <button class="btn btn-primary" onclick="cleanRooms()">Clean Selected</button>
     </div>
+    <div style="margin-top:12px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Override settings (optional)</div>
+      <div class="settings-grid">
+        <div class="settings-row">
+          <span class="settings-label">Fan Speed</span>
+          <select id="rooms-fan-speed"><option value="">— device default —</option><option>QUIET</option><option>BALANCED</option><option>TURBO</option><option>MAX</option><option>MAX_PLUS</option><option>OFF</option></select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Mop Mode</span>
+          <select id="rooms-mop-mode"><option value="">— device default —</option><option>STANDARD</option><option>FAST</option><option>DEEP</option><option>DEEP_PLUS</option></select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Water Flow</span>
+          <select id="rooms-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option></select>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Route</span>
+          <select id="rooms-route"><option value="">— device default —</option><option>STANDARD</option><option>FAST</option><option>DEEP</option><option>DEEP_PLUS</option></select>
+        </div>
+      </div>
+    </div>
     <div class="feedback" id="rooms-clean-feedback"></div>
+  </div>
+
+  <!-- Clean Settings Panel -->
+  <div class="panel">
+    <div class="panel-title">Clean Settings</div>
+    <div class="settings-grid" id="settings-content">
+      <div class="settings-row">
+        <span class="settings-label">Fan Speed</span>
+        <select id="set-fan-speed"><option value="">Loading…</option></select>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Mop Mode</span>
+        <select id="set-mop-mode"><option value="">Loading…</option></select>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Water Flow</span>
+        <select id="set-water-flow"><option value="">Loading…</option></select>
+      </div>
+    </div>
+    <div class="form-row" style="margin-top:12px">
+      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+    </div>
+    <div class="feedback" id="settings-feedback"></div>
   </div>
 
   <!-- Routines Panel -->
@@ -358,7 +498,7 @@ _HTML = """<!DOCTYPE html>
   </div>
 
   <!-- Clean History Panel -->
-  <div class="panel" style="grid-column: span 2; min-width: 0;">
+  <div class="panel" style="grid-column: 1/-1; min-width: 0;">
     <div class="panel-title">Clean History (last 10)</div>
     <div id="history-content" class="loading">Loading…</div>
   </div>
@@ -404,9 +544,19 @@ function setFeedback(id, msg, isErr) {
   if (msg) setTimeout(() => { el.textContent = ''; el.className = 'feedback'; }, 4000);
 }
 
-async function apiPost(url) {
-  const r = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'} });
+async function apiPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
   return r.json();
+}
+
+function populateSelect(id, options, current) {
+  const el = document.getElementById(id);
+  el.innerHTML = '<option value="">— device default —</option>' +
+    options.map(o => `<option${o === current ? ' selected' : ''}>${o}</option>`).join('');
 }
 
 // ------------------------------------------------------------------ status
@@ -480,14 +630,19 @@ async function cleanRooms() {
   if (!checked.length) { setFeedback('rooms-clean-feedback', 'Select at least one room.', true); return; }
   const ids = checked.map(c => parseInt(c.value));
   const repeat = parseInt(document.getElementById('repeat-count').value) || 1;
+  const body = {segment_ids: ids, repeat};
+  const fs = document.getElementById('rooms-fan-speed').value;
+  const mm = document.getElementById('rooms-mop-mode').value;
+  const wf = document.getElementById('rooms-water-flow').value;
+  const rt = document.getElementById('rooms-route').value;
+  if (fs) body.fan_speed = fs;
+  if (mm) body.mop_mode = mm;
+  if (wf) body.water_flow = wf;
+  if (rt) body.route = rt;
   const btn = event.target;
   btn.disabled = true;
   try {
-    const res = await fetch('/api/rooms/clean', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({segment_ids: ids, repeat})
-    }).then(r => r.json());
+    const res = await apiPost('/api/rooms/clean', body);
     setFeedback('rooms-clean-feedback', res.ok ? 'Cleaning started!' : (res.detail || 'Error'), !res.ok);
   } catch(e) {
     setFeedback('rooms-clean-feedback', e.message, true);
@@ -538,13 +693,41 @@ async function doAction(name) {
   btns.forEach(b => b.disabled = true);
   setFeedback('action-feedback', '');
   try {
-    const res = await fetch('/api/action/' + name, {method:'POST'}).then(r => r.json());
+    const res = await apiPost('/api/action/' + name, {});
     setFeedback('action-feedback', res.ok ? `${name} sent!` : (res.detail || 'Error'), !res.ok);
     if (name !== 'locate') setTimeout(loadStatus, 2000);
   } catch(e) {
     setFeedback('action-feedback', e.message, true);
   } finally {
     btns.forEach(b => b.disabled = false);
+  }
+}
+
+// ------------------------------------------------------------------ settings
+async function loadSettings() {
+  try {
+    const s = await fetch('/api/settings').then(r => r.json());
+    populateSelect('set-fan-speed',  ['QUIET','BALANCED','TURBO','MAX','MAX_PLUS','OFF','SMART'], s.fan_speed);
+    populateSelect('set-mop-mode',   ['STANDARD','FAST','DEEP','DEEP_PLUS','SMART'], s.mop_mode);
+    populateSelect('set-water-flow', ['OFF','LOW','MEDIUM','HIGH','EXTREME','SMART'], s.water_flow);
+  } catch(e) {
+    document.getElementById('settings-feedback').textContent = 'Could not load settings.';
+  }
+}
+
+async function saveSettings() {
+  const body = {};
+  const fs = document.getElementById('set-fan-speed').value;
+  const mm = document.getElementById('set-mop-mode').value;
+  const wf = document.getElementById('set-water-flow').value;
+  if (fs) body.fan_speed = fs;
+  if (mm) body.mop_mode = mm;
+  if (wf) body.water_flow = wf;
+  try {
+    const res = await apiPost('/api/settings', body);
+    setFeedback('settings-feedback', res.ok ? 'Settings saved!' : (res.detail || 'Error'), !res.ok);
+  } catch(e) {
+    setFeedback('settings-feedback', e.message, true);
   }
 }
 
@@ -596,7 +779,7 @@ async function loadHistory() {
       return;
     }
     el.innerHTML = `<table>
-      <tr><th>Start</th><th>Duration</th><th>Area (m²)</th><th>Complete</th></tr>
+      <tr><th>Start</th><th>Duration</th><th>Area (m²)</th><th>Complete</th><th>Started by</th><th>Type</th><th>Finish reason</th></tr>
       ${records.map(r => {
         const dt = r.start_time ? new Date(r.start_time).toLocaleString() : '—';
         const dur = r.duration_seconds != null
@@ -606,7 +789,10 @@ async function loadHistory() {
         const done = r.complete
           ? '<span class="badge badge-green">Yes</span>'
           : '<span class="badge badge-yellow">No</span>';
-        return `<tr><td>${dt}</td><td>${dur}</td><td>${area}</td><td>${done}</td></tr>`;
+        const startType = r.start_type ? r.start_type.replace(/_/g,' ') : '—';
+        const cleanType = r.clean_type ? r.clean_type.replace(/_/g,' ') : '—';
+        const reason = r.finish_reason ? r.finish_reason.replace(/_/g,' ') : '—';
+        return `<tr><td>${dt}</td><td>${dur}</td><td>${area}</td><td>${done}</td><td>${startType}</td><td>${cleanType}</td><td>${reason}</td></tr>`;
       }).join('')}
     </table>`;
   } catch(e) {
@@ -621,6 +807,7 @@ function refreshAll() {
   loadRoutines();
   loadConsumables();
   loadHistory();
+  loadSettings();
 }
 
 // Initial load + auto-refresh

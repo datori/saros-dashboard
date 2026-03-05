@@ -8,8 +8,62 @@ from typing import Annotated
 
 import typer
 
-from .client import AuthError, ConfigError, RoutineNotFoundError, VacuumClient
+from .client import (
+    AuthError,
+    CleanRoute,
+    ConfigError,
+    FanSpeed,
+    MopMode,
+    RoutineNotFoundError,
+    VacuumClient,
+    WaterFlow,
+)
 from .config import get_username, save_session
+
+# ---------------------------------------------------------------------------
+# Settings option helpers
+# ---------------------------------------------------------------------------
+
+_FAN_SPEED_CHOICES  = [e.name for e in FanSpeed]
+_MOP_MODE_CHOICES   = [e.name for e in MopMode]
+_WATER_FLOW_CHOICES = [e.name for e in WaterFlow]
+_ROUTE_CHOICES      = [e.name for e in CleanRoute]
+
+
+def _parse_fan_speed(value: str | None) -> FanSpeed | None:
+    if value is None:
+        return None
+    v = value.upper()
+    if v not in {e.name for e in FanSpeed}:
+        _err(f"Invalid --fan-speed '{value}'. Valid values: {', '.join(_FAN_SPEED_CHOICES)}")
+    return FanSpeed[v]
+
+
+def _parse_mop_mode(value: str | None) -> MopMode | None:
+    if value is None:
+        return None
+    v = value.upper()
+    if v not in {e.name for e in MopMode}:
+        _err(f"Invalid --mop-mode '{value}'. Valid values: {', '.join(_MOP_MODE_CHOICES)}")
+    return MopMode[v]
+
+
+def _parse_water_flow(value: str | None) -> WaterFlow | None:
+    if value is None:
+        return None
+    v = value.upper()
+    if v not in {e.name for e in WaterFlow}:
+        _err(f"Invalid --water-flow '{value}'. Valid values: {', '.join(_WATER_FLOW_CHOICES)}")
+    return WaterFlow[v]
+
+
+def _parse_route(value: str | None) -> CleanRoute | None:
+    if value is None:
+        return None
+    v = value.upper()
+    if v not in {e.name for e in CleanRoute}:
+        _err(f"Invalid --route '{value}'. Valid values: {', '.join(_ROUTE_CHOICES)}")
+    return CleanRoute[v]
 
 app = typer.Typer(
     name="vacuum",
@@ -57,11 +111,21 @@ def status():
 
 
 @app.command()
-def clean():
+def clean(
+    fan_speed:  Annotated[str | None, typer.Option("--fan-speed",  help=f"Fan speed: {', '.join(_FAN_SPEED_CHOICES)}")] = None,
+    mop_mode:   Annotated[str | None, typer.Option("--mop-mode",   help=f"Mop mode: {', '.join(_MOP_MODE_CHOICES)}")] = None,
+    water_flow: Annotated[str | None, typer.Option("--water-flow", help=f"Water flow: {', '.join(_WATER_FLOW_CHOICES)}")] = None,
+    route:      Annotated[str | None, typer.Option("--route",      help=f"Route: {', '.join(_ROUTE_CHOICES)}")] = None,
+):
     """Start a full home clean."""
 
     async def _go(client: VacuumClient):
-        await client.start_clean()
+        await client.start_clean(
+            fan_speed=_parse_fan_speed(fan_speed),
+            mop_mode=_parse_mop_mode(mop_mode),
+            water_flow=_parse_water_flow(water_flow),
+            route=_parse_route(route),
+        )
         typer.echo("Cleaning started.")
 
     _run(_with_client(_go))
@@ -130,8 +194,12 @@ def map():
 
 @app.command()
 def rooms(
-    names: Annotated[list[str], typer.Argument(help="Room name(s) to clean")],
-    repeat: Annotated[int, typer.Option("--repeat", "-r", help="Times to clean each room")] = 1,
+    names:      Annotated[list[str], typer.Argument(help="Room name(s) to clean")],
+    repeat:     Annotated[int,       typer.Option("--repeat", "-r",     help="Times to clean each room")] = 1,
+    fan_speed:  Annotated[str | None, typer.Option("--fan-speed",  help=f"Fan speed: {', '.join(_FAN_SPEED_CHOICES)}")] = None,
+    mop_mode:   Annotated[str | None, typer.Option("--mop-mode",   help=f"Mop mode: {', '.join(_MOP_MODE_CHOICES)}")] = None,
+    water_flow: Annotated[str | None, typer.Option("--water-flow", help=f"Water flow: {', '.join(_WATER_FLOW_CHOICES)}")] = None,
+    route:      Annotated[str | None, typer.Option("--route",      help=f"Route: {', '.join(_ROUTE_CHOICES)}")] = None,
 ):
     """Clean one or more rooms by name."""
 
@@ -148,7 +216,13 @@ def rooms(
         if missing:
             available = list(name_map.keys())
             _err(f"Unknown room(s): {missing}. Available: {available}")
-        await client.clean_rooms(segment_ids, repeat=repeat)
+        await client.clean_rooms(
+            segment_ids, repeat=repeat,
+            fan_speed=_parse_fan_speed(fan_speed),
+            mop_mode=_parse_mop_mode(mop_mode),
+            water_flow=_parse_water_flow(water_flow),
+            route=_parse_route(route),
+        )
         typer.echo(f"Cleaning: {', '.join(names)} (repeat={repeat})")
 
     _run(_with_client(_go))
@@ -173,6 +247,39 @@ def routine(
             return
         await client.run_routine(name)
         typer.echo(f"Routine '{name}' started.")
+
+    _run(_with_client(_go))
+
+
+@app.command()
+def settings(
+    fan_speed:  Annotated[str | None, typer.Option("--fan-speed",  help=f"Set fan speed: {', '.join(_FAN_SPEED_CHOICES)}")] = None,
+    mop_mode:   Annotated[str | None, typer.Option("--mop-mode",   help=f"Set mop mode: {', '.join(_MOP_MODE_CHOICES)}")] = None,
+    water_flow: Annotated[str | None, typer.Option("--water-flow", help=f"Set water flow: {', '.join(_WATER_FLOW_CHOICES)}")] = None,
+):
+    """View or update device cleaning settings. With no flags, prints current settings."""
+
+    async def _go(client: VacuumClient):
+        fs = _parse_fan_speed(fan_speed)
+        mm = _parse_mop_mode(mop_mode)
+        wf = _parse_water_flow(water_flow)
+
+        if fs is None and mm is None and wf is None:
+            s = await client.get_current_settings()
+            typer.echo(f"Fan speed:  {s.fan_speed.name if s.fan_speed else '(unknown)'}")
+            typer.echo(f"Mop mode:   {s.mop_mode.name if s.mop_mode else '(unknown)'}")
+            typer.echo(f"Water flow: {s.water_flow.name if s.water_flow else '(unknown)'}")
+            return
+
+        if fs is not None:
+            await client.set_fan_speed(fs)
+            typer.echo(f"Fan speed set to {fs.name}.")
+        if mm is not None:
+            await client.set_mop_mode(mm)
+            typer.echo(f"Mop mode set to {mm.name}.")
+        if wf is not None:
+            await client.set_water_flow(wf)
+            typer.echo(f"Water flow set to {wf.name}.")
 
     _run(_with_client(_go))
 

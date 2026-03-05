@@ -1,18 +1,4 @@
-## ADDED Requirements
-
-### Requirement: CLI entry point
-The system SHALL provide a `vacuum` CLI command installable via `pip install -e .` with subcommands for all vacuum operations.
-
-#### Scenario: Help output
-- **WHEN** user runs `vacuum --help`
-- **THEN** the CLI SHALL display all available subcommands with descriptions
-
-### Requirement: Status subcommand
-The CLI SHALL provide a `vacuum status` subcommand displaying current vacuum state.
-
-#### Scenario: Status display
-- **WHEN** user runs `vacuum status`
-- **THEN** the CLI SHALL print state, battery level, dock status, and any error in human-readable format
+## MODIFIED Requirements
 
 ### Requirement: Clean subcommand
 The CLI SHALL provide a `vacuum clean` subcommand to start a full home clean, with optional flags for fan speed, mop mode, water flow, and route.
@@ -33,17 +19,6 @@ The CLI SHALL provide a `vacuum clean` subcommand to start a full home clean, wi
 - **WHEN** user runs `vacuum clean --fan-speed invalid`
 - **THEN** the CLI SHALL print an error listing valid values and exit with code 1
 
-### Requirement: Stop, pause, and dock subcommands
-The CLI SHALL provide `vacuum stop`, `vacuum pause`, and `vacuum dock` subcommands.
-
-#### Scenario: Stop
-- **WHEN** user runs `vacuum stop`
-- **THEN** the vacuum SHALL stop cleaning
-
-#### Scenario: Dock
-- **WHEN** user runs `vacuum dock`
-- **THEN** the vacuum SHALL return to its dock
-
 ### Requirement: Room clean subcommand
 The CLI SHALL provide `vacuum rooms <room_name>...` accepting one or more room names, an optional `--repeat` flag, and optional `--fan-speed`, `--mop-mode`, `--water-flow`, `--route` flags.
 
@@ -59,30 +34,7 @@ The CLI SHALL provide `vacuum rooms <room_name>...` accepting one or more room n
 - **WHEN** user runs `vacuum rooms Kitchen --fan-speed quiet --mop-mode fast`
 - **THEN** `clean_rooms()` SHALL be called with `fan_speed=FanSpeed.QUIET` and `mop_mode=MopMode.FAST`
 
-### Requirement: Routine subcommand
-The CLI SHALL provide `vacuum routine <name>` to trigger a named routine.
-
-#### Scenario: Run routine
-- **WHEN** user runs `vacuum routine "morning-clean"`
-- **THEN** the named routine SHALL execute
-
-#### Scenario: List routines
-- **WHEN** user runs `vacuum routine --list`
-- **THEN** the CLI SHALL print all available routine names
-
-### Requirement: Locate subcommand
-The CLI SHALL provide `vacuum locate` to play the locator sound.
-
-#### Scenario: Locate
-- **WHEN** user runs `vacuum locate`
-- **THEN** the vacuum SHALL play the locator sound
-
-### Requirement: Map subcommand
-The CLI SHALL provide `vacuum map` to display room segment IDs and names.
-
-#### Scenario: Map display
-- **WHEN** user runs `vacuum map`
-- **THEN** the CLI SHALL print a table of room names and their segment IDs
+## ADDED Requirements
 
 ### Requirement: Settings subcommand
 The CLI SHALL provide a `vacuum settings` subcommand to view and update device cleaning parameter defaults.
@@ -102,10 +54,3 @@ The CLI SHALL provide a `vacuum settings` subcommand to view and update device c
 #### Scenario: Invalid value
 - **WHEN** user runs `vacuum settings --fan-speed bogus`
 - **THEN** the CLI SHALL print an error listing valid values and exit with code 1
-
-### Requirement: CLI error output
-The CLI SHALL print actionable error messages to stderr and exit with a non-zero code on failure.
-
-#### Scenario: Auth failure
-- **WHEN** credentials are missing or invalid
-- **THEN** the CLI SHALL print a clear error message to stderr and exit with code 1
