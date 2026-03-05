@@ -10,6 +10,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .client import VacuumClient
+from . import scheduler
 
 _client: VacuumClient | None = None
 
@@ -17,8 +18,11 @@ _client: VacuumClient | None = None
 @asynccontextmanager
 async def _lifespan(mcp: FastMCP):
     global _client
+    scheduler.init_db()
     _client = VacuumClient()
     await _client.authenticate()
+    rooms = await _client.get_rooms()
+    await scheduler.sync_rooms(rooms)
     try:
         yield {}
     finally:
@@ -141,6 +145,76 @@ async def run_routine(name: str) -> dict:
     client = _client_or_raise()
     await client.run_routine(name)
     return {"result": f"Routine '{name}' started."}
+
+
+@mcp.tool()
+async def get_cleaning_schedule() -> dict:
+    """Get the full cleaning schedule status for all rooms, including last cleaned times, overdue ratios, and configured intervals."""
+    rows = await scheduler.get_schedule()
+    return {"schedule": [r.as_dict() for r in rows]}
+
+
+@mcp.tool()
+async def get_overdue_rooms(mode: str = "vacuum") -> dict:
+    """List rooms that are past their cleaning interval.
+
+    Args:
+        mode: 'vacuum' or 'mop' (default: 'vacuum').
+    """
+    rows = await scheduler.get_overdue_rooms(mode)
+    if not rows:
+        return {"overdue": [], "message": f"No {mode} rooms are currently overdue."}
+    return {"overdue": [r.as_dict() for r in rows]}
+
+
+@mcp.tool()
+async def set_room_interval(room: str, mode: str, days: float | None) -> dict:
+    """Set or clear a room's cleaning interval.
+
+    Args:
+        room: Room name (e.g. 'Kitchen').
+        mode: 'vacuum' or 'mop'.
+        days: Interval in days (e.g. 3.0), or null to clear.
+    """
+    client = _client_or_raise()
+    name_map = await client.rooms_by_name()
+    segment_id = name_map.get(room.lower())
+    if segment_id is None:
+        available = sorted(name_map.keys())
+        raise ValueError(f"Unknown room '{room}'. Available: {available}")
+    await scheduler.set_room_interval(segment_id, mode, days)
+    action = f"set to {days} days" if days is not None else "cleared"
+    return {"result": f"{room} {mode} interval {action}."}
+
+
+@mcp.tool()
+async def plan_clean(max_minutes: float | None = None, mode: str = "vacuum") -> dict:
+    """Recommend rooms to clean given an optional time budget.
+
+    Args:
+        max_minutes: Time budget in minutes. If omitted, returns all overdue rooms.
+        mode: 'vacuum' or 'mop' (default: 'vacuum').
+    """
+    result = await scheduler.plan_clean(max_minutes, mode)
+    return result.as_dict()
+
+
+@mcp.tool()
+async def set_room_notes(room: str, notes: str | None) -> dict:
+    """Attach or clear free-text notes for a room's schedule entry.
+
+    Args:
+        room: Room name (e.g. 'Bedroom').
+        notes: Notes text, or null to clear.
+    """
+    client = _client_or_raise()
+    name_map = await client.rooms_by_name()
+    segment_id = name_map.get(room.lower())
+    if segment_id is None:
+        available = sorted(name_map.keys())
+        raise ValueError(f"Unknown room '{room}'. Available: {available}")
+    await scheduler.set_room_notes(segment_id, notes)
+    return {"result": f"Notes for '{room}' updated."}
 
 
 def main():

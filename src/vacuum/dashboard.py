@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import typer
 
 from .client import CleanRoute, FanSpeed, MopMode, VacuumClient, WaterFlow
+from . import scheduler
 
 # ---------------------------------------------------------------------------
 # App state
@@ -25,8 +26,11 @@ _client: VacuumClient | None = None
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     global _client
+    scheduler.init_db()
     _client = VacuumClient()
     await _client.authenticate()
+    rooms = await _client.get_rooms()
+    await scheduler.sync_rooms(rooms)
     try:
         yield
     finally:
@@ -170,6 +174,13 @@ async def api_action(name: str, body: StartCleanRequest | None = None):
         data = body.model_dump() if body else {}
         fan_speed, mop_mode, water_flow, route = _parse_settings(data)
         await _get_client().start_clean(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
+        # Log whole-home clean if water_flow is present
+        if body and body.water_flow:
+            mode = "both" if body.water_flow != "OFF" else "vacuum"
+            rows = await scheduler.get_schedule()
+            all_ids = [r.segment_id for r in rows]
+            if all_ids:
+                await scheduler.log_clean(all_ids, mode, source="dashboard")
         return {"ok": True}
     if name not in _ACTIONS:
         raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: start, {list(_ACTIONS)}")
@@ -208,6 +219,36 @@ async def api_rooms_clean(body: RoomsCleanRequest):
         body.segment_ids, repeat=body.repeat,
         fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route,
     )
+    mode = "both" if (body.water_flow and body.water_flow != "OFF") else "vacuum"
+    await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Schedule API endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/schedule")
+async def api_schedule_get():
+    rows = await scheduler.get_schedule()
+    return [r.as_dict() for r in rows]
+
+
+class ScheduleRoomPatch(BaseModel):
+    vacuum_days: float | None = None
+    mop_days: float | None = None
+    notes: str | None = None
+
+
+@app.patch("/api/schedule/rooms/{segment_id}")
+async def api_schedule_room_patch(segment_id: int, body: ScheduleRoomPatch):
+    if "vacuum_days" in body.model_fields_set:
+        await scheduler.set_room_interval(segment_id, "vacuum", body.vacuum_days)
+    if "mop_days" in body.model_fields_set:
+        await scheduler.set_room_interval(segment_id, "mop", body.mop_days)
+    if "notes" in body.model_fields_set:
+        await scheduler.set_room_notes(segment_id, body.notes)
     return {"ok": True}
 
 
@@ -382,6 +423,34 @@ _HTML = """<!DOCTYPE html>
   .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .settings-row { display: flex; flex-direction: column; gap: 4px; }
   .settings-label { font-size: 11px; color: var(--muted); }
+  /* Schedule panel */
+  .schedule-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .schedule-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px 8px 0; font-size: 12px; }
+  .schedule-table td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .schedule-table tr:last-child td { border-bottom: none; }
+  .overdue-cell { color: var(--red); font-weight: 600; }
+  .warning-cell { color: var(--yellow); font-weight: 600; }
+  .dim-cell { color: var(--muted); }
+  /* Interval edit modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.6); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px; min-width: 300px;
+  }
+  .modal h3 { font-size: 15px; margin-bottom: 16px; }
+  .modal-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .modal-row label { font-size: 12px; color: var(--muted); }
+  .modal-row input[type=number] { width: 100%; }
+  .modal-row input[type=text] {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 6px 10px; font-size: 13px; width: 100%;
+  }
+  .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -484,6 +553,12 @@ _HTML = """<!DOCTYPE html>
     <div class="feedback" id="settings-feedback"></div>
   </div>
 
+  <!-- Schedule Panel -->
+  <div class="panel" style="grid-column: 1/-1; min-width: 0;">
+    <div class="panel-title">Cleaning Schedule</div>
+    <div id="schedule-content" class="loading">Loading…</div>
+  </div>
+
   <!-- Routines Panel -->
   <div class="panel">
     <div class="panel-title">Routines</div>
@@ -503,6 +578,29 @@ _HTML = """<!DOCTYPE html>
     <div id="history-content" class="loading">Loading…</div>
   </div>
 
+</div>
+
+<!-- Interval edit modal -->
+<div class="modal-overlay" onclick="if(event.target===this)closeEditModal()">
+  <div class="modal">
+    <h3 id="edit-modal-title">Edit Intervals</h3>
+    <div class="modal-row">
+      <label>Vacuum every (days) — clear to unschedule</label>
+      <input type="number" id="edit-vacuum-days" min="0.5" step="0.5" placeholder="e.g. 3">
+    </div>
+    <div class="modal-row">
+      <label>Mop every (days) — clear to unschedule</label>
+      <input type="number" id="edit-mop-days" min="0.5" step="0.5" placeholder="e.g. 7">
+    </div>
+    <div class="modal-row">
+      <label>Notes (optional)</label>
+      <input type="text" id="edit-notes" placeholder="e.g. Pets sleep here, prioritize">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditModal()">Save</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -800,6 +898,129 @@ async function loadHistory() {
   }
 }
 
+// ------------------------------------------------------------------ schedule
+function fmtDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+}
+
+function dueDateStr(lastIso, intervalDays) {
+  if (!intervalDays) return null;
+  if (!lastIso) return 'Never';
+  const due = new Date(new Date(lastIso).getTime() + intervalDays * 86400000);
+  return due.toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+}
+
+function overdueClass(ratio, intervalDays, lastIso) {
+  if (!intervalDays) return 'dim-cell';       // no interval
+  if (!lastIso) return 'overdue-cell';        // never cleaned → overdue
+  if (ratio == null) return '';
+  if (ratio >= 1.0) return 'overdue-cell';
+  if (ratio >= 0.8) return 'warning-cell';
+  return '';
+}
+
+async function loadSchedule() {
+  const el = document.getElementById('schedule-content');
+  try {
+    const rows = await fetch('/api/schedule').then(r => r.json());
+    if (!rows.length) {
+      el.innerHTML = '<span class="unavailable">No rooms in schedule yet.</span>';
+      return;
+    }
+    const html = `
+      <table class="schedule-table">
+        <tr>
+          <th>Room</th>
+          <th>Last Vacuumed</th>
+          <th>Last Mopped</th>
+          <th>Vacuum Due</th>
+          <th>Mop Due</th>
+          <th>Vacuum Every</th>
+          <th>Mop Every</th>
+          <th></th>
+        </tr>
+        ${rows.map(r => {
+          const lv = fmtDate(r.last_vacuumed) || (r.vacuum_days ? '<span class="overdue-cell">Never</span>' : '<span class="dim-cell">—</span>');
+          const lm = fmtDate(r.last_mopped)   || (r.mop_days   ? '<span class="overdue-cell">Never</span>' : '<span class="dim-cell">—</span>');
+
+          const vDue = dueDateStr(r.last_vacuumed, r.vacuum_days);
+          const mDue = dueDateStr(r.last_mopped, r.mop_days);
+          const vClass = overdueClass(r.vacuum_overdue_ratio, r.vacuum_days, r.last_vacuumed);
+          const mClass = overdueClass(r.mop_overdue_ratio, r.mop_days, r.last_mopped);
+
+          const vDueHtml = vDue
+            ? `<span class="${vClass}">${vDue}${r.vacuum_overdue_ratio != null && r.vacuum_overdue_ratio >= 1.0 ? ' ⚠' : (r.vacuum_days && !r.last_vacuumed ? ' ⚠' : '')}</span>`
+            : '<span class="dim-cell">—</span>';
+          const mDueHtml = mDue
+            ? `<span class="${mClass}">${mDue}${r.mop_overdue_ratio != null && r.mop_overdue_ratio >= 1.0 ? ' ⚠' : (r.mop_days && !r.last_mopped ? ' ⚠' : '')}</span>`
+            : '<span class="dim-cell">—</span>';
+
+          const vInterval = r.vacuum_days ? r.vacuum_days + 'd' : '<span class="dim-cell">—</span>';
+          const mInterval = r.mop_days    ? r.mop_days    + 'd' : '<span class="dim-cell">—</span>';
+
+          return `<tr>
+            <td><strong>${r.name}</strong></td>
+            <td>${lv}</td>
+            <td>${lm}</td>
+            <td>${vDueHtml}</td>
+            <td>${mDueHtml}</td>
+            <td>${vInterval}</td>
+            <td>${mInterval}</td>
+            <td><button class="btn btn-neutral btn-sm" onclick="openEditModal(${r.segment_id}, '${r.name}', ${r.vacuum_days || 'null'}, ${r.mop_days || 'null'}, ${JSON.stringify(r.notes || '')})">Edit</button></td>
+          </tr>`;
+        }).join('')}
+      </table>`;
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">Unavailable: ${e.message}</span>`;
+  }
+}
+
+// ------------------------------------------------------------------ schedule edit modal
+let _editSegmentId = null;
+
+function openEditModal(segmentId, name, vacuumDays, mopDays, notes) {
+  _editSegmentId = segmentId;
+  document.getElementById('edit-modal-title').textContent = name;
+  document.getElementById('edit-vacuum-days').value = vacuumDays ?? '';
+  document.getElementById('edit-mop-days').value    = mopDays ?? '';
+  document.getElementById('edit-notes').value       = notes ?? '';
+  document.querySelector('.modal-overlay').classList.add('open');
+}
+
+function closeEditModal() {
+  document.querySelector('.modal-overlay').classList.remove('open');
+  _editSegmentId = null;
+}
+
+async function saveEditModal() {
+  if (_editSegmentId == null) return;
+  const vd = document.getElementById('edit-vacuum-days').value;
+  const md = document.getElementById('edit-mop-days').value;
+  const nt = document.getElementById('edit-notes').value;
+  const body = {};
+  body.vacuum_days = vd !== '' ? parseFloat(vd) : null;
+  body.mop_days    = md !== '' ? parseFloat(md) : null;
+  body.notes       = nt || null;
+  try {
+    const res = await fetch(`/api/schedule/rooms/${_editSegmentId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+    if (res.ok) {
+      closeEditModal();
+      await loadSchedule();
+    } else {
+      alert('Save failed: ' + (res.detail || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Save error: ' + e.message);
+  }
+}
+
 // ------------------------------------------------------------------ refresh
 function refreshAll() {
   loadStatus();
@@ -808,6 +1029,7 @@ function refreshAll() {
   loadConsumables();
   loadHistory();
   loadSettings();
+  loadSchedule();
 }
 
 // Initial load + auto-refresh
