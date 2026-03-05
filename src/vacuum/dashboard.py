@@ -1,0 +1,650 @@
+"""Local web dashboard for Roborock Saros 10R status and control."""
+
+from __future__ import annotations
+
+import webbrowser
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+import typer
+
+from .client import VacuumClient
+
+# ---------------------------------------------------------------------------
+# App state
+# ---------------------------------------------------------------------------
+
+_client: VacuumClient | None = None
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    global _client
+    _client = VacuumClient()
+    await _client.authenticate()
+    try:
+        yield
+    finally:
+        if _client:
+            await _client.close()
+            _client = None
+
+
+app = FastAPI(title="Vacuum Dashboard", lifespan=_lifespan)
+
+
+def _get_client() -> VacuumClient:
+    if _client is None:
+        raise HTTPException(status_code=503, detail="Vacuum client not ready")
+    return _client
+
+
+# ---------------------------------------------------------------------------
+# API endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/status")
+async def api_status():
+    s = await _get_client().get_status()
+    return s.as_dict()
+
+
+@app.get("/api/rooms")
+async def api_rooms():
+    rooms = await _get_client().get_rooms()
+    return [{"id": r.id, "name": r.name} for r in rooms]
+
+
+@app.get("/api/routines")
+async def api_routines():
+    routines = await _get_client().get_routines()
+    return [r.name for r in routines]
+
+
+@app.get("/api/consumables")
+async def api_consumables():
+    try:
+        c = await _get_client().get_consumables()
+        return c.as_dict()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/history")
+async def api_history():
+    try:
+        records = await _get_client().get_clean_history(limit=10)
+        return [r.as_dict() for r in records]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+_ACTIONS = {
+    "start": lambda c: c.start_clean(),
+    "stop": lambda c: c.stop(),
+    "pause": lambda c: c.pause(),
+    "dock": lambda c: c.return_to_dock(),
+    "locate": lambda c: c.locate(),
+}
+
+
+@app.post("/api/action/{name}")
+async def api_action(name: str):
+    if name not in _ACTIONS:
+        raise HTTPException(status_code=404, detail=f"Unknown action '{name}'. Valid: {list(_ACTIONS)}")
+    await _ACTIONS[name](_get_client())
+    return {"ok": True}
+
+
+@app.post("/api/routine/{name}")
+async def api_routine(name: str):
+    await _get_client().run_routine(name)
+    return {"ok": True}
+
+
+class RoomsCleanRequest(BaseModel):
+    segment_ids: list[int]
+    repeat: int = 1
+
+
+@app.post("/api/rooms/clean")
+async def api_rooms_clean(body: RoomsCleanRequest):
+    await _get_client().clean_rooms(body.segment_ids, repeat=body.repeat)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Frontend HTML
+# ---------------------------------------------------------------------------
+
+_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vacuum Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --accent: #4f8ef7;
+    --accent2: #7c3aed;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .refresh-info { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .panel-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--muted); }
+  .stat-value { font-weight: 500; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-green { background: #14532d; color: var(--green); }
+  .badge-yellow { background: #422006; color: var(--yellow); }
+  .badge-red { background: #450a0a; color: var(--red); }
+  .badge-blue { background: #1e3a5f; color: var(--accent); }
+  .badge-gray { background: var(--border); color: var(--muted); }
+  .progress-wrap { margin: 8px 0; }
+  .progress-label { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .progress-bar-bg {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+  }
+  .bar-green { background: var(--green); }
+  .bar-yellow { background: var(--yellow); }
+  .bar-red { background: var(--red); }
+  .bar-blue { background: var(--accent); }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-danger  { background: var(--red); color: #fff; }
+  .btn-warning { background: var(--yellow); color: #000; }
+  .btn-neutral { background: var(--border); color: var(--text); }
+  .btn-purple  { background: var(--accent2); color: #fff; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .actions-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .feedback {
+    font-size: 12px;
+    margin-top: 8px;
+    min-height: 18px;
+  }
+  .feedback.ok { color: var(--green); }
+  .feedback.err { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px 8px 0; font-size: 12px; }
+  td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .checkbox-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+  .checkbox-list label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .checkbox-list input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
+  .form-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .form-row label { color: var(--muted); white-space: nowrap; }
+  input[type=number] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    width: 64px;
+    font-size: 13px;
+  }
+  .routine-list { display: flex; flex-direction: column; gap: 8px; }
+  .routine-row { display: flex; justify-content: space-between; align-items: center; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading { color: var(--muted); font-style: italic; }
+  .unavailable { color: var(--muted); font-style: italic; }
+  .last-updated { font-size: 11px; color: var(--muted); margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+    <circle cx="14" cy="14" r="13" stroke="#4f8ef7" stroke-width="2"/>
+    <circle cx="14" cy="14" r="6" fill="#4f8ef7" opacity="0.3"/>
+    <circle cx="14" cy="14" r="2" fill="#4f8ef7"/>
+    <circle cx="14" cy="4"  r="1.5" fill="#4f8ef7"/>
+    <circle cx="14" cy="24" r="1.5" fill="#4f8ef7"/>
+    <circle cx="4"  cy="14" r="1.5" fill="#4f8ef7"/>
+    <circle cx="24" cy="14" r="1.5" fill="#4f8ef7"/>
+  </svg>
+  <h1>Vacuum Dashboard</h1>
+  <span class="refresh-info">Auto-refreshes every 30s &nbsp;·&nbsp; <a href="#" onclick="refreshAll();return false" style="color:var(--accent)">Refresh now</a></span>
+</header>
+
+<div class="grid">
+
+  <!-- Status Panel -->
+  <div class="panel">
+    <div class="panel-title">Status</div>
+    <div id="status-content" class="loading">Loading…</div>
+    <div class="last-updated" id="status-updated"></div>
+  </div>
+
+  <!-- Actions Panel -->
+  <div class="panel">
+    <div class="panel-title">Actions</div>
+    <div class="actions-grid">
+      <button class="btn btn-primary" onclick="doAction('start')">▶ Start</button>
+      <button class="btn btn-danger"  onclick="doAction('stop')">■ Stop</button>
+      <button class="btn btn-warning" onclick="doAction('pause')">⏸ Pause</button>
+      <button class="btn btn-neutral" onclick="doAction('dock')">⏏ Dock</button>
+      <button class="btn btn-neutral" onclick="doAction('locate')">🔔 Locate</button>
+    </div>
+    <div class="feedback" id="action-feedback"></div>
+  </div>
+
+  <!-- Rooms Panel -->
+  <div class="panel">
+    <div class="panel-title">Rooms</div>
+    <div id="rooms-content" class="loading">Loading…</div>
+  </div>
+
+  <!-- Room Clean Panel -->
+  <div class="panel">
+    <div class="panel-title">Clean Rooms</div>
+    <div id="room-check-list" class="checkbox-list loading">Loading…</div>
+    <div class="form-row">
+      <label>Repeat:</label>
+      <input type="number" id="repeat-count" value="1" min="1" max="3">
+      <button class="btn btn-primary" onclick="cleanRooms()">Clean Selected</button>
+    </div>
+    <div class="feedback" id="rooms-clean-feedback"></div>
+  </div>
+
+  <!-- Routines Panel -->
+  <div class="panel">
+    <div class="panel-title">Routines</div>
+    <div id="routines-content" class="loading">Loading…</div>
+    <div class="feedback" id="routine-feedback"></div>
+  </div>
+
+  <!-- Consumables Panel -->
+  <div class="panel">
+    <div class="panel-title">Consumables</div>
+    <div id="consumables-content" class="loading">Loading…</div>
+  </div>
+
+  <!-- Clean History Panel -->
+  <div class="panel" style="grid-column: span 2; min-width: 0;">
+    <div class="panel-title">Clean History (last 10)</div>
+    <div id="history-content" class="loading">Loading…</div>
+  </div>
+
+</div>
+
+<script>
+// ------------------------------------------------------------------ helpers
+function fmt(val, fallback='—') { return val != null ? val : fallback; }
+
+function pctColor(p) {
+  if (p == null) return 'bar-gray';
+  if (p > 50) return 'bar-green';
+  if (p > 20) return 'bar-yellow';
+  return 'bar-red';
+}
+
+function pctBadge(p) {
+  if (p == null) return '<span class="badge badge-gray">—</span>';
+  const cls = p > 50 ? 'badge-green' : p > 20 ? 'badge-yellow' : 'badge-red';
+  return `<span class="badge ${cls}">${p}%</span>`;
+}
+
+function progressBar(label, pct) {
+  const color = pctColor(pct);
+  const display = pct != null ? pct + '%' : '—';
+  return `
+    <div class="progress-wrap">
+      <div class="progress-label"><span>${label}</span><span>${display}</span></div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar ${color}" style="width:${pct ?? 0}%"></div>
+      </div>
+    </div>`;
+}
+
+function setFeedback(id, msg, isErr) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'feedback ' + (isErr ? 'err' : 'ok');
+  if (msg) setTimeout(() => { el.textContent = ''; el.className = 'feedback'; }, 4000);
+}
+
+async function apiPost(url) {
+  const r = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'} });
+  return r.json();
+}
+
+// ------------------------------------------------------------------ status
+async function loadStatus() {
+  const el = document.getElementById('status-content');
+  try {
+    const d = await fetch('/api/status').then(r => r.json());
+
+    const stateColor = d.state && d.state.toLowerCase().includes('clean') ? 'badge-blue'
+      : d.state === 'charging' || d.state === 'charging_complete' ? 'badge-green'
+      : d.state === 'error' ? 'badge-red' : 'badge-gray';
+
+    const dockBadge = d.in_dock
+      ? '<span class="badge badge-green">In dock</span>'
+      : '<span class="badge badge-yellow">Away</span>';
+
+    const battColor = (d.battery ?? 0) > 50 ? 'bar-green' : (d.battery ?? 0) > 20 ? 'bar-yellow' : 'bar-red';
+
+    el.innerHTML = `
+      <div class="stat-row">
+        <span class="stat-label">State</span>
+        <span class="badge ${stateColor}">${fmt(d.state)}</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Dock</span>
+        ${dockBadge}
+      </div>
+      ${d.error_code ? `<div class="stat-row"><span class="stat-label">Error</span><span class="badge badge-red">${d.error_code}</span></div>` : ''}
+      <div style="margin-top:12px">
+        <div class="progress-label"><span>Battery</span><span>${fmt(d.battery, '?')}%</span></div>
+        <div class="progress-bar-bg" style="height:12px;border-radius:6px">
+          <div class="progress-bar ${battColor}" style="width:${d.battery ?? 0}%;height:100%"></div>
+        </div>
+      </div>`;
+    document.getElementById('status-updated').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+// ------------------------------------------------------------------ rooms
+let _rooms = [];
+
+async function loadRooms() {
+  const el = document.getElementById('rooms-content');
+  const checkEl = document.getElementById('room-check-list');
+  try {
+    _rooms = await fetch('/api/rooms').then(r => r.json());
+    if (!_rooms.length) {
+      el.innerHTML = '<span class="unavailable">No rooms found.</span>';
+      checkEl.innerHTML = '<span class="unavailable">No rooms found.</span>';
+      return;
+    }
+    el.innerHTML = `<table>
+      <tr><th>ID</th><th>Name</th></tr>
+      ${_rooms.map(r => `<tr><td>${r.id}</td><td>${r.name}</td></tr>`).join('')}
+    </table>`;
+    checkEl.className = 'checkbox-list';
+    checkEl.innerHTML = _rooms.map(r =>
+      `<label><input type="checkbox" value="${r.id}"> ${r.name}</label>`
+    ).join('');
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+    checkEl.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+async function cleanRooms() {
+  const checked = [...document.querySelectorAll('#room-check-list input:checked')];
+  if (!checked.length) { setFeedback('rooms-clean-feedback', 'Select at least one room.', true); return; }
+  const ids = checked.map(c => parseInt(c.value));
+  const repeat = parseInt(document.getElementById('repeat-count').value) || 1;
+  const btn = event.target;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/rooms/clean', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({segment_ids: ids, repeat})
+    }).then(r => r.json());
+    setFeedback('rooms-clean-feedback', res.ok ? 'Cleaning started!' : (res.detail || 'Error'), !res.ok);
+  } catch(e) {
+    setFeedback('rooms-clean-feedback', e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ------------------------------------------------------------------ routines
+async function loadRoutines() {
+  const el = document.getElementById('routines-content');
+  try {
+    const routines = await fetch('/api/routines').then(r => r.json());
+    if (!routines.length) {
+      el.innerHTML = '<span class="unavailable">No routines found.</span>';
+      return;
+    }
+    el.innerHTML = `<div class="routine-list">
+      ${routines.map(name =>
+        `<div class="routine-row">
+          <span>${name}</span>
+          <button class="btn btn-purple btn-sm" onclick="runRoutine(this, '${name.replace(/'/g, "\\'")}')">Run</button>
+        </div>`
+      ).join('')}
+    </div>`;
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+async function runRoutine(btn, name) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const res = await fetch('/api/routine/' + encodeURIComponent(name), {method:'POST'}).then(r => r.json());
+    setFeedback('routine-feedback', res.ok ? `'${name}' started!` : (res.detail || 'Error'), !res.ok);
+  } catch(e) {
+    setFeedback('routine-feedback', e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Run';
+  }
+}
+
+// ------------------------------------------------------------------ actions
+async function doAction(name) {
+  const btns = document.querySelectorAll('.actions-grid .btn');
+  btns.forEach(b => b.disabled = true);
+  setFeedback('action-feedback', '');
+  try {
+    const res = await fetch('/api/action/' + name, {method:'POST'}).then(r => r.json());
+    setFeedback('action-feedback', res.ok ? `${name} sent!` : (res.detail || 'Error'), !res.ok);
+    if (name !== 'locate') setTimeout(loadStatus, 2000);
+  } catch(e) {
+    setFeedback('action-feedback', e.message, true);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+// ------------------------------------------------------------------ consumables
+async function loadConsumables() {
+  const el = document.getElementById('consumables-content');
+  try {
+    const c = await fetch('/api/consumables').then(r => r.json());
+    if (c.error) {
+      el.innerHTML = `<span class="unavailable">Unavailable: ${c.error}</span>`;
+      return;
+    }
+    el.innerHTML = [
+      progressBar('Main brush', c.main_brush_pct),
+      progressBar('Side brush', c.side_brush_pct),
+      progressBar('Filter',     c.filter_pct),
+      progressBar('Sensors',    c.sensor_pct),
+    ].join('');
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+// ------------------------------------------------------------------ history
+async function loadHistory() {
+  const el = document.getElementById('history-content');
+  try {
+    const records = await fetch('/api/history').then(r => r.json());
+    if (records.error) {
+      el.innerHTML = `<span class="unavailable">Unavailable: ${records.error}</span>`;
+      return;
+    }
+    if (!records.length) {
+      el.innerHTML = '<span class="unavailable">No clean history found.</span>';
+      return;
+    }
+    el.innerHTML = `<table>
+      <tr><th>Start</th><th>Duration</th><th>Area (m²)</th><th>Complete</th></tr>
+      ${records.map(r => {
+        const dt = r.start_time ? new Date(r.start_time).toLocaleString() : '—';
+        const dur = r.duration_seconds != null
+          ? Math.floor(r.duration_seconds/60) + 'm ' + (r.duration_seconds%60) + 's'
+          : '—';
+        const area = r.area_m2 != null ? r.area_m2 + ' m²' : '—';
+        const done = r.complete
+          ? '<span class="badge badge-green">Yes</span>'
+          : '<span class="badge badge-yellow">No</span>';
+        return `<tr><td>${dt}</td><td>${dur}</td><td>${area}</td><td>${done}</td></tr>`;
+      }).join('')}
+    </table>`;
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+// ------------------------------------------------------------------ refresh
+function refreshAll() {
+  loadStatus();
+  loadRooms();
+  loadRoutines();
+  loadConsumables();
+  loadHistory();
+}
+
+// Initial load + auto-refresh
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return HTMLResponse(_HTML)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+_cli = typer.Typer(name="vacuum-dashboard", add_completion=False)
+
+
+@_cli.command()
+def _cmd(
+    port: Annotated[int, typer.Option("--port", "-p", help="Port to listen on")] = 8080,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open browser on start")] = False,
+) -> None:
+    """Launch the vacuum web dashboard."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        lan_ip = None
+
+    typer.echo(f"Vacuum dashboard starting on port {port}")
+    typer.echo(f"  Local:   http://localhost:{port}")
+    if lan_ip and not lan_ip.startswith("127."):
+        typer.echo(f"  Network: http://{lan_ip}:{port}")
+
+    if not no_browser:
+        import threading
+        def _open():
+            import time
+            time.sleep(1.2)
+            webbrowser.open(f"http://localhost:{port}")
+        threading.Thread(target=_open, daemon=True).start()
+
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+
+
+def main() -> None:
+    _cli()

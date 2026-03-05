@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass
 from typing import Any
 
-from roborock.data import HomeDataScene, UserData
+from roborock.data import (
+    FILTER_REPLACE_TIME,
+    MAIN_BRUSH_REPLACE_TIME,
+    SENSOR_DIRTY_REPLACE_TIME,
+    SIDE_BRUSH_REPLACE_TIME,
+    HomeDataScene,
+    UserData,
+)
 from roborock.data.v1.v1_code_mappings import RoborockStateCode
 from roborock.devices.cache import NoCache
 from roborock.devices.device import RoborockDevice
@@ -50,6 +58,38 @@ class VacuumStatus:
 class Room:
     id: int
     name: str
+
+
+@dataclass
+class Consumables:
+    main_brush_pct: int | None
+    side_brush_pct: int | None
+    filter_pct: int | None
+    sensor_pct: int | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "main_brush_pct": self.main_brush_pct,
+            "side_brush_pct": self.side_brush_pct,
+            "filter_pct": self.filter_pct,
+            "sensor_pct": self.sensor_pct,
+        }
+
+
+@dataclass
+class CleanRecord:
+    start_time: str | None
+    duration_seconds: int | None
+    area_m2: float | None
+    complete: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "start_time": self.start_time,
+            "duration_seconds": self.duration_seconds,
+            "area_m2": self.area_m2,
+            "complete": self.complete,
+        }
 
 
 class VacuumClient:
@@ -254,3 +294,56 @@ class VacuumClient:
         raise RoutineNotFoundError(
             f"Routine '{name}' not found. Available: {available}"
         )
+
+    # -------------------------------------------------------------------------
+    # Consumables
+    # -------------------------------------------------------------------------
+
+    async def get_consumables(self) -> Consumables:
+        """Return consumable life as percentages remaining."""
+        v1 = await self._v1()
+        await v1.consumables.refresh()
+        c = v1.consumables
+
+        def _pct(work_time: int | None, replace_time: int) -> int | None:
+            if work_time is None:
+                return None
+            remaining = max(0, replace_time - work_time)
+            return round(remaining / replace_time * 100)
+
+        return Consumables(
+            main_brush_pct=_pct(c.main_brush_work_time, MAIN_BRUSH_REPLACE_TIME),
+            side_brush_pct=_pct(c.side_brush_work_time, SIDE_BRUSH_REPLACE_TIME),
+            filter_pct=_pct(c.filter_work_time, FILTER_REPLACE_TIME),
+            sensor_pct=_pct(c.sensor_dirty_time, SENSOR_DIRTY_REPLACE_TIME),
+        )
+
+    # -------------------------------------------------------------------------
+    # Clean history
+    # -------------------------------------------------------------------------
+
+    async def get_clean_history(self, limit: int = 10) -> list[CleanRecord]:
+        """Return the last `limit` cleaning job records."""
+        v1 = await self._v1()
+        await v1.clean_summary.refresh()
+        record_ids = (v1.clean_summary.records or [])[:limit]
+        records: list[CleanRecord] = []
+        for rid in record_ids:
+            try:
+                r = await v1.clean_summary.get_clean_record(rid)
+                start = (
+                    datetime.datetime.fromtimestamp(r.begin, tz=datetime.timezone.utc).isoformat()
+                    if r.begin
+                    else None
+                )
+                records.append(
+                    CleanRecord(
+                        start_time=start,
+                        duration_seconds=r.duration,
+                        area_m2=r.square_meter_area,
+                        complete=bool(r.complete),
+                    )
+                )
+            except Exception:
+                continue
+        return records
