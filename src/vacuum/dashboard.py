@@ -1678,7 +1678,7 @@ async function loadSchedule() {
             <td>${vInterval}</td>
             <td>${mInterval}</td>
             <td class="hide-mobile">${pwDisplay}</td>
-            <td><button class="btn btn-neutral btn-sm" onclick="openEditModal(${r.segment_id}, '${r.name}', ${r.vacuum_days || 'null'}, ${r.mop_days || 'null'}, ${JSON.stringify(r.notes || '')}, ${pw})">Edit</button></td>
+            <td><button class="btn btn-neutral btn-sm" onclick='openEditModal(${r.segment_id}, ${JSON.stringify(r.name)}, ${r.vacuum_days || "null"}, ${r.mop_days || "null"}, ${JSON.stringify(r.notes || "")}, ${pw})'>Edit</button></td>
           </tr>`;
         }).join('')}
       </table></div>`;
@@ -1759,7 +1759,7 @@ async function loadTriggers() {
             <span class="trigger-mgmt-detail">${t.budget_min}min · ${t.mode}${t.notes ? ' · ' + t.notes : ''}</span>
           </div>
           <div style="display:flex;gap:4px">
-            <button class="btn btn-neutral btn-sm" onclick="openTriggerModal('${t.name.replace(/'/g, "\\\\'")}', ${t.budget_min}, '${t.mode}', ${JSON.stringify(t.notes || '')})">Edit</button>
+            <button class="btn btn-neutral btn-sm" onclick='openTriggerModal(${JSON.stringify(t.name)}, ${t.budget_min}, ${JSON.stringify(t.mode)}, ${JSON.stringify(t.notes || "")})'>Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteTrigger('${t.name.replace(/'/g, "\\\\'")}')">Del</button>
           </div>
         </div>`
