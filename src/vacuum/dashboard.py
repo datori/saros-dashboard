@@ -10,7 +10,7 @@ from typing import Annotated
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 import typer
@@ -474,7 +474,13 @@ _HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Vacuum">
+<meta name="theme-color" content="#22272e">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <title>Vacuum Dashboard</title>
 <style>
   :root {
@@ -497,7 +503,7 @@ _HTML = """<!DOCTYPE html>
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 14px;
     min-height: 100vh;
-    padding: 20px;
+    padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
   }
   header {
     display: flex;
@@ -1364,6 +1370,40 @@ setInterval(refreshAll, 30000);
 </script>
 </body>
 </html>"""
+
+
+_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="40" fill="#22272e"/>
+  <circle cx="96" cy="82" r="46" fill="none" stroke="#4f8ef7" stroke-width="10"/>
+  <circle cx="96" cy="82" r="18" fill="#4f8ef7"/>
+  <rect x="58" y="136" width="76" height="12" rx="6" fill="#adbac7"/>
+  <rect x="70" y="152" width="12" height="16" rx="4" fill="#adbac7"/>
+  <rect x="110" y="152" width="12" height="16" rx="4" fill="#adbac7"/>
+</svg>"""
+
+
+@app.get("/icons/apple-touch-icon.png")
+async def icon():
+    return Response(content=_ICON_SVG, media_type="image/svg+xml")
+
+
+@app.get("/manifest.json")
+async def manifest():
+    return JSONResponse({
+        "name": "Vacuum Dashboard",
+        "short_name": "Vacuum",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#22272e",
+        "theme_color": "#22272e",
+        "icons": [
+            {
+                "src": "/icons/apple-touch-icon.png",
+                "sizes": "192x192",
+                "type": "image/svg+xml",
+            }
+        ],
+    }, headers={"Content-Type": "application/manifest+json"})
 
 
 @app.get("/", response_class=HTMLResponse)
