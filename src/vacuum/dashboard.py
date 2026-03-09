@@ -686,6 +686,31 @@ _HTML = """<!DOCTYPE html>
     color: var(--text); padding: 6px 10px; font-size: 13px; width: 100%;
   }
   .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  /* Table scroll wrapper */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* Tab bar */
+  #tab-bar { display: none; }
+  .tab-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: 1; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 10px; padding: 8px 0; transition: color 0.15s; }
+  .tab-btn .tab-icon { font-size: 20px; line-height: 1; }
+  .tab-btn.active { color: var(--accent); }
+  @media (max-width: 639px) {
+    .hide-mobile { display: none !important; }
+    #tab-bar {
+      display: flex;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding-bottom: env(safe-area-inset-bottom);
+      z-index: 50;
+    }
+    body { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+    body[data-active-tab="home"] [data-tab]:not([data-tab="home"]) { display: none; }
+    body[data-active-tab="clean"] [data-tab]:not([data-tab="clean"]) { display: none; }
+    body[data-active-tab="info"] [data-tab]:not([data-tab="info"]) { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -708,14 +733,14 @@ _HTML = """<!DOCTYPE html>
 <div class="grid">
 
   <!-- Status Panel -->
-  <div class="panel">
+  <div class="panel" data-tab="home">
     <div class="panel-title" id="title-status">Status</div>
     <div id="status-content" class="loading">Loading…</div>
     <div class="last-updated" id="status-updated"></div>
   </div>
 
   <!-- Actions Panel -->
-  <div class="panel">
+  <div class="panel" data-tab="home">
     <div class="panel-title">Actions</div>
     <div class="actions-grid">
       <button class="btn btn-primary" onclick="doAction('start')">▶ Start</button>
@@ -750,14 +775,8 @@ _HTML = """<!DOCTYPE html>
     <div class="feedback" id="action-feedback"></div>
   </div>
 
-  <!-- Rooms Panel -->
-  <div class="panel">
-    <div class="panel-title" id="title-rooms">Rooms</div>
-    <div id="rooms-content" class="loading">Loading…</div>
-  </div>
-
   <!-- Room Clean Panel -->
-  <div class="panel">
+  <div class="panel" data-tab="clean">
     <div class="panel-title">Clean Rooms</div>
     <div id="room-check-list" class="checkbox-list loading">Loading…</div>
     <div class="form-row">
@@ -800,7 +819,7 @@ _HTML = """<!DOCTYPE html>
   </div>
 
   <!-- Clean Settings Panel -->
-  <div class="panel">
+  <div class="panel" data-tab="clean">
     <div class="panel-title" id="title-settings">Clean Settings</div>
     <div class="settings-grid" id="settings-content">
       <div class="settings-row">
@@ -823,26 +842,26 @@ _HTML = """<!DOCTYPE html>
   </div>
 
   <!-- Schedule Panel -->
-  <div class="panel" style="grid-column: 1/-1; min-width: 0;">
+  <div class="panel" data-tab="info" style="grid-column: 1/-1; min-width: 0;">
     <div class="panel-title">Cleaning Schedule</div>
     <div id="schedule-content" class="loading">Loading…</div>
   </div>
 
   <!-- Routines Panel -->
-  <div class="panel">
+  <div class="panel" data-tab="clean">
     <div class="panel-title" id="title-routines">Routines</div>
     <div id="routines-content" class="loading">Loading…</div>
     <div class="feedback" id="routine-feedback"></div>
   </div>
 
   <!-- Consumables Panel -->
-  <div class="panel">
+  <div class="panel" data-tab="home">
     <div class="panel-title" id="title-consumables">Consumables</div>
     <div id="consumables-content" class="loading">Loading…</div>
   </div>
 
   <!-- Clean History Panel -->
-  <div class="panel" style="grid-column: 1/-1; min-width: 0;">
+  <div class="panel" data-tab="info" style="grid-column: 1/-1; min-width: 0;">
     <div class="panel-title" id="title-history">Clean History (last 10)</div>
     <div id="history-content" class="loading">Loading…</div>
   </div>
@@ -971,32 +990,24 @@ async function loadStatus() {
 let _rooms = [];
 
 async function loadRooms() {
-  const el = document.getElementById('rooms-content');
   const checkEl = document.getElementById('room-check-list');
   try {
     _rooms = await fetch('/api/rooms').then(r => r.json());
     if (!Array.isArray(_rooms)) {
       const msg = _rooms.error || 'Unavailable';
-      el.innerHTML = `<span class="unavailable">Error: ${msg}</span>`;
       checkEl.innerHTML = `<span class="unavailable">Error: ${msg}</span>`;
       _rooms = [];
       return;
     }
     if (!_rooms.length) {
-      el.innerHTML = '<span class="unavailable">No rooms found.</span>';
       checkEl.innerHTML = '<span class="unavailable">No rooms found.</span>';
       return;
     }
-    el.innerHTML = `<table>
-      <tr><th>ID</th><th>Name</th></tr>
-      ${_rooms.map(r => `<tr><td>${r.id}</td><td>${r.name}</td></tr>`).join('')}
-    </table>`;
     checkEl.className = 'checkbox-list';
     checkEl.innerHTML = _rooms.map(r =>
       `<label><input type="checkbox" value="${r.id}"> ${r.name}</label>`
     ).join('');
   } catch(e) {
-    el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
     checkEl.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
   }
 }
@@ -1191,8 +1202,8 @@ async function loadHistory() {
       el.innerHTML = '<span class="unavailable">No clean history found.</span>';
       return;
     }
-    el.innerHTML = `<table>
-      <tr><th>Start</th><th>Duration</th><th>Area (m²)</th><th>Complete</th><th>Started by</th><th>Type</th><th>Finish reason</th></tr>
+    el.innerHTML = `<div class="table-scroll"><table>
+      <tr><th>Start</th><th>Duration</th><th>Area (m²)</th><th>Complete</th><th class="hide-mobile">Started by</th><th class="hide-mobile">Type</th><th class="hide-mobile">Finish reason</th></tr>
       ${records.map(r => {
         const dt = r.start_time ? new Date(r.start_time).toLocaleString() : '—';
         const dur = r.duration_seconds != null
@@ -1205,9 +1216,9 @@ async function loadHistory() {
         const startType = r.start_type ? r.start_type.replace(/_/g,' ') : '—';
         const cleanType = r.clean_type ? r.clean_type.replace(/_/g,' ') : '—';
         const reason = r.finish_reason ? r.finish_reason.replace(/_/g,' ') : '—';
-        return `<tr><td>${dt}</td><td>${dur}</td><td>${area}</td><td>${done}</td><td>${startType}</td><td>${cleanType}</td><td>${reason}</td></tr>`;
+        return `<tr><td>${dt}</td><td>${dur}</td><td>${area}</td><td>${done}</td><td class="hide-mobile">${startType}</td><td class="hide-mobile">${cleanType}</td><td class="hide-mobile">${reason}</td></tr>`;
       }).join('')}
-    </table>`;
+    </table></div>`;
   } catch(e) {
     el.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
   }
@@ -1245,11 +1256,11 @@ async function loadSchedule() {
       return;
     }
     const html = `
-      <table class="schedule-table">
+      <div class="table-scroll"><table class="schedule-table">
         <tr>
           <th>Room</th>
-          <th>Last Vacuumed</th>
-          <th>Last Mopped</th>
+          <th class="hide-mobile">Last Vacuumed</th>
+          <th class="hide-mobile">Last Mopped</th>
           <th>Vacuum Due</th>
           <th>Mop Due</th>
           <th>Vacuum Every</th>
@@ -1277,8 +1288,8 @@ async function loadSchedule() {
 
           return `<tr>
             <td><strong>${r.name}</strong></td>
-            <td>${lv}</td>
-            <td>${lm}</td>
+            <td class="hide-mobile">${lv}</td>
+            <td class="hide-mobile">${lm}</td>
             <td>${vDueHtml}</td>
             <td>${mDueHtml}</td>
             <td>${vInterval}</td>
@@ -1286,7 +1297,7 @@ async function loadSchedule() {
             <td><button class="btn btn-neutral btn-sm" onclick="openEditModal(${r.segment_id}, '${r.name}', ${r.vacuum_days || 'null'}, ${r.mop_days || 'null'}, ${JSON.stringify(r.notes || '')})">Edit</button></td>
           </tr>`;
         }).join('')}
-      </table>`;
+      </table></div>`;
     el.innerHTML = html;
   } catch(e) {
     el.innerHTML = `<span class="unavailable">Unavailable: ${e.message}</span>`;
@@ -1364,10 +1375,26 @@ function refreshAll() {
   loaders.forEach((fn, i) => setTimeout(fn, i * 300));
 }
 
+// ------------------------------------------------------------------ tabs
+function activateTab(tab) {
+  document.body.dataset.activeTab = tab;
+  sessionStorage.setItem('activeTab', tab);
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.id === 'tab-' + tab);
+  });
+}
+activateTab(sessionStorage.getItem('activeTab') || 'home');
+
 // Initial load + auto-refresh
 refreshAll();
 setInterval(refreshAll, 30000);
 </script>
+
+<nav id="tab-bar">
+  <button class="tab-btn" id="tab-home" onclick="activateTab('home')"><span class="tab-icon">🏠</span>Home</button>
+  <button class="tab-btn" id="tab-clean" onclick="activateTab('clean')"><span class="tab-icon">🧹</span>Clean</button>
+  <button class="tab-btn" id="tab-info" onclick="activateTab('info')"><span class="tab-icon">📊</span>Info</button>
+</nav>
 </body>
 </html>"""
 
