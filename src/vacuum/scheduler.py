@@ -50,6 +50,37 @@ def init_db() -> None:
                 PRIMARY KEY (clean_event_id, segment_id)
             );
         """)
+        # Migrations for new columns (idempotent)
+        for col, typedef in [
+            ("started_at", "TEXT"),
+            ("finished_at", "TEXT"),
+            ("trigger_name", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE clean_events ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        try:
+            conn.execute("ALTER TABLE room_schedules ADD COLUMN priority_weight REAL DEFAULT 1.0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        # Trigger tables
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS triggers (
+                name       TEXT PRIMARY KEY,
+                budget_min REAL NOT NULL,
+                mode       TEXT DEFAULT 'vacuum',
+                notes      TEXT
+            );
+            CREATE TABLE IF NOT EXISTS trigger_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_name   TEXT NOT NULL,
+                fired_at       TEXT NOT NULL,
+                returned_at    TEXT,
+                actual_min     REAL,
+                clean_event_id INTEGER
+            );
+        """)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +141,108 @@ async def set_room_notes(segment_id: int, notes: str | None) -> None:
     await asyncio.to_thread(_set_room_notes_sync, segment_id, notes)
 
 
+def _set_room_priority_sync(segment_id: int, weight: float) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE room_schedules SET priority_weight = ? WHERE segment_id = ?",
+            (weight, segment_id),
+        )
+
+
+async def set_room_priority(segment_id: int, weight: float) -> None:
+    """Set priority weight for a room (default 1.0)."""
+    await asyncio.to_thread(_set_room_priority_sync, segment_id, weight)
+
+
+# ---------------------------------------------------------------------------
+# Trigger management
+# ---------------------------------------------------------------------------
+
+def _upsert_trigger_sync(name: str, budget_min: float, mode: str = "vacuum", notes: str | None = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO triggers (name, budget_min, mode, notes)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET budget_min = excluded.budget_min,
+                mode = excluded.mode, notes = excluded.notes
+            """,
+            (name, budget_min, mode, notes),
+        )
+
+
+async def upsert_trigger(name: str, budget_min: float, mode: str = "vacuum", notes: str | None = None) -> None:
+    """Create or update a trigger."""
+    await asyncio.to_thread(_upsert_trigger_sync, name, budget_min, mode, notes)
+
+
+def _delete_trigger_sync(name: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM triggers WHERE name = ?", (name,))
+
+
+async def delete_trigger(name: str) -> None:
+    """Delete a trigger by name."""
+    await asyncio.to_thread(_delete_trigger_sync, name)
+
+
+def _get_triggers_sync() -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT name, budget_min, mode, notes FROM triggers ORDER BY name").fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_triggers() -> list[dict]:
+    """Return all configured triggers."""
+    return await asyncio.to_thread(_get_triggers_sync)
+
+
+def _log_trigger_event_sync(trigger_name: str, clean_event_id: int | None = None) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO trigger_events (trigger_name, fired_at, clean_event_id) VALUES (?, ?, ?)",
+            (trigger_name, now, clean_event_id),
+        )
+        return cur.lastrowid
+
+
+async def log_trigger_event(trigger_name: str, clean_event_id: int | None = None) -> int:
+    """Log a trigger firing event. Returns the event ID."""
+    return await asyncio.to_thread(_log_trigger_event_sync, trigger_name, clean_event_id)
+
+
+def _close_trigger_event_sync(trigger_name: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        # Find the most recent unclosed event for this trigger
+        row = conn.execute(
+            "SELECT id, fired_at FROM trigger_events WHERE trigger_name = ? AND returned_at IS NULL ORDER BY fired_at DESC LIMIT 1",
+            (trigger_name,),
+        ).fetchone()
+        if row:
+            fired = datetime.fromisoformat(row["fired_at"])
+            if fired.tzinfo is None:
+                fired = fired.replace(tzinfo=timezone.utc)
+            actual_min = (datetime.now(timezone.utc) - fired).total_seconds() / 60
+            conn.execute(
+                "UPDATE trigger_events SET returned_at = ?, actual_min = ? WHERE id = ?",
+                (now, round(actual_min, 2), row["id"]),
+            )
+
+
+async def close_trigger_event(trigger_name: str) -> None:
+    """Close an open trigger event, recording returned_at and actual_min."""
+    await asyncio.to_thread(_close_trigger_event_sync, trigger_name)
+
+
+async def close_all_trigger_events() -> None:
+    """Close all open trigger events (used when window closes)."""
+    triggers = await get_triggers()
+    for t in triggers:
+        await close_trigger_event(t["name"])
+
+
 # ---------------------------------------------------------------------------
 # Clean event logging
 # ---------------------------------------------------------------------------
@@ -166,6 +299,7 @@ class RoomSchedule:
     vacuum_overdue_ratio: float | None  # None = no interval; float('inf') = never cleaned
     mop_overdue_ratio: float | None
     notes: str | None
+    priority_weight: float
 
     def as_dict(self) -> dict:
         def _ratio(v: float | None) -> float | None:
@@ -184,6 +318,7 @@ class RoomSchedule:
             "vacuum_overdue_ratio": _ratio(self.vacuum_overdue_ratio),
             "mop_overdue_ratio": _ratio(self.mop_overdue_ratio),
             "notes": self.notes,
+            "priority_weight": self.priority_weight,
         }
 
 
@@ -205,7 +340,7 @@ def _compute_overdue_ratio(
 def _get_last_cleaned(
     conn: sqlite3.Connection, segment_id: int, mode: str
 ) -> str | None:
-    """Get most recent dispatched_at for a room in the given mode."""
+    """Get most recent dispatched_at for a completed clean in the given mode."""
     row = conn.execute(
         """
         SELECT e.dispatched_at
@@ -213,6 +348,7 @@ def _get_last_cleaned(
         JOIN clean_event_rooms cer ON cer.clean_event_id = e.id
         WHERE cer.segment_id = ?
           AND (e.mode = ? OR e.mode = 'both')
+          AND e.complete = 1
         ORDER BY e.dispatched_at DESC
         LIMIT 1
         """,
@@ -224,7 +360,7 @@ def _get_last_cleaned(
 def _get_schedule_sync() -> list[RoomSchedule]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT segment_id, name, vacuum_days, mop_days, notes FROM room_schedules ORDER BY name"
+            "SELECT segment_id, name, vacuum_days, mop_days, notes, priority_weight FROM room_schedules ORDER BY name"
         ).fetchall()
         result = []
         for row in rows:
@@ -244,6 +380,7 @@ def _get_schedule_sync() -> list[RoomSchedule]:
                     vacuum_overdue_ratio=vacuum_ratio,
                     mop_overdue_ratio=mop_ratio,
                     notes=row["notes"],
+                    priority_weight=row["priority_weight"] or 1.0,
                 )
             )
     return result
@@ -269,6 +406,75 @@ def _get_overdue_rooms_sync(mode: str = "vacuum") -> list[RoomSchedule]:
 async def get_overdue_rooms(mode: str = "vacuum") -> list[RoomSchedule]:
     """Return rooms where overdue_ratio >= 1.0, sorted descending by ratio."""
     return await asyncio.to_thread(_get_overdue_rooms_sync, mode)
+
+
+# ---------------------------------------------------------------------------
+# Priority scoring
+# ---------------------------------------------------------------------------
+
+TYPE_WEIGHTS: dict[str, float] = {"vacuum": 1.5, "mop": 1.0}
+
+
+def compute_priority_score(
+    room_weight: float, type_weight: float, overdue_ratio: float
+) -> float:
+    """Return room_weight × type_weight × overdue_ratio (infinity if ratio is inf)."""
+    if overdue_ratio == float("inf"):
+        return float("inf")
+    return room_weight * type_weight * overdue_ratio
+
+
+@dataclass
+class PriorityEntry:
+    segment_id: int
+    name: str
+    mode: str
+    overdue_ratio: float
+    priority_score: float
+    estimated_sec: float | None
+    priority_weight: float
+
+    def as_dict(self) -> dict:
+        return {
+            "segment_id": self.segment_id,
+            "name": self.name,
+            "mode": self.mode,
+            "overdue_ratio": round(self.overdue_ratio, 3) if self.overdue_ratio != float("inf") else None,
+            "priority_score": round(self.priority_score, 3) if self.priority_score != float("inf") else None,
+            "estimated_sec": round(self.estimated_sec, 1) if self.estimated_sec is not None else None,
+            "priority_weight": self.priority_weight,
+        }
+
+
+def _get_priority_queue_sync() -> list[PriorityEntry]:
+    """Return all overdue rooms across both modes, scored and sorted descending."""
+    schedule = _get_schedule_sync()
+    entries: list[PriorityEntry] = []
+    for room in schedule:
+        for mode, ratio_attr in [("vacuum", "vacuum_overdue_ratio"), ("mop", "mop_overdue_ratio")]:
+            ratio = getattr(room, ratio_attr)
+            if ratio is None or ratio < 1.0:
+                continue
+            type_weight = TYPE_WEIGHTS.get(mode, 1.0)
+            score = compute_priority_score(room.priority_weight, type_weight, ratio)
+            est = _estimate_duration_sync([room.segment_id])
+            entries.append(PriorityEntry(
+                segment_id=room.segment_id,
+                name=room.name,
+                mode=mode,
+                overdue_ratio=ratio,
+                priority_score=score,
+                estimated_sec=est,
+                priority_weight=room.priority_weight,
+            ))
+    # Sort descending by score; inf sorts first with reverse=True
+    entries.sort(key=lambda e: e.priority_score if e.priority_score != float("inf") else float("inf"), reverse=True)
+    return entries
+
+
+async def get_priority_queue() -> list[PriorityEntry]:
+    """Return all overdue rooms across both modes, scored and sorted descending."""
+    return await asyncio.to_thread(_get_priority_queue_sync)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +585,7 @@ class PlanResult:
 def _plan_clean_sync(
     max_minutes: float | None = None, mode: str = "vacuum"
 ) -> PlanResult:
+    # Get overdue rooms sorted by priority score (cross-mode if no mode filter needed)
     overdue = _get_overdue_rooms_sync(mode)
 
     if not overdue:
@@ -386,6 +593,16 @@ def _plan_clean_sync(
             selected=[], deferred=[], estimated_total_sec=None,
             notes=["No rooms are overdue."],
         )
+
+    # Sort by priority score instead of raw overdue ratio
+    type_weight = TYPE_WEIGHTS.get(mode, 1.0)
+    ratio_attr = "vacuum_overdue_ratio" if mode == "vacuum" else "mop_overdue_ratio"
+    overdue.sort(
+        key=lambda r: compute_priority_score(
+            r.priority_weight, type_weight, getattr(r, ratio_attr) or 0
+        ),
+        reverse=True,
+    )
 
     if max_minutes is None:
         selected = overdue

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import webbrowser
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Annotated
 
 import uvicorn
@@ -41,6 +44,216 @@ _stale_cache: dict[str, object] = {}
 
 _last_contact: float | None = None  # monotonic timestamp of last successful device call
 _reconnect_count: int = 0
+
+# ---------------------------------------------------------------------------
+# Active clean tracking & completion monitor
+# ---------------------------------------------------------------------------
+
+_DISPATCH_TIMEOUT_SEC = 300  # 5 minutes to enter cleaning state
+_CLEANING_STATES = {"sweeping", "mopping", "cleaning"}
+_SUCCESS_STATES = {"charging", "charging_complete"}
+_FAILURE_STATES = {"error", "idle"}
+
+
+@dataclass
+class ActiveClean:
+    event_id: int
+    segment_ids: list[int]
+    dispatched_at: float  # monotonic time
+    started_at: float | None = None  # monotonic time
+    per_room_estimates: list[float | None] = field(default_factory=list)
+    mode: str = "vacuum"
+
+
+_active_clean: ActiveClean | None = None
+
+
+async def _resolve_clean_success() -> None:
+    """Mark all rooms complete, clear active clean."""
+    global _active_clean
+    if _active_clean is None:
+        return
+    log = logging.getLogger("vacuum")
+    elapsed = time.monotonic() - (_active_clean.started_at or _active_clean.dispatched_at)
+    log.info("Clean %d completed successfully (%.0fs)", _active_clean.event_id, elapsed)
+    await scheduler.update_clean_duration(_active_clean.event_id, elapsed)
+    _active_clean = None
+
+
+async def _resolve_clean_failure(elapsed_sec: float) -> None:
+    """Apply partial credit for interrupted multi-room cleans, clear active clean."""
+    global _active_clean
+    if _active_clean is None:
+        return
+    log = logging.getLogger("vacuum")
+    log.warning("Clean %d failed/interrupted at %.0fs", _active_clean.event_id, elapsed_sec)
+
+    # Compute partial credit via cumulative milestones
+    estimates = _active_clean.per_room_estimates
+    segment_ids = _active_clean.segment_ids
+    credited_ids: list[int] = []
+
+    if len(segment_ids) > 1 and estimates and all(e is not None for e in estimates):
+        cumulative = 0.0
+        for i, est in enumerate(estimates):
+            cumulative += est
+            if cumulative <= elapsed_sec:
+                credited_ids.append(segment_ids[i])
+
+    if credited_ids:
+        log.info("Partial credit: %d/%d rooms credited", len(credited_ids), len(segment_ids))
+        # Create a new complete event for credited rooms
+        mode = _active_clean.mode
+        event_id = await scheduler.log_clean(credited_ids, mode, source="auto-partial")
+        await scheduler.update_clean_duration(event_id, elapsed_sec)
+    else:
+        log.info("No rooms credited for interrupted clean")
+
+    # Original event stays with complete=0
+    _active_clean = None
+
+
+async def _check_active_clean(status: dict) -> None:
+    """Check vacuum state against _active_clean, detect transitions."""
+    global _active_clean
+    if _active_clean is None:
+        return
+
+    state = status.get("state", "")
+    now = time.monotonic()
+
+    # Detect started
+    if _active_clean.started_at is None:
+        if state in _CLEANING_STATES:
+            _active_clean.started_at = now
+            # Update started_at in DB
+            started_iso = datetime.now(timezone.utc).isoformat()
+            def _update_started():
+                conn = scheduler._connect()
+                try:
+                    conn.execute("UPDATE clean_events SET started_at = ? WHERE id = ?",
+                                 (started_iso, _active_clean.event_id))
+                    conn.commit()
+                finally:
+                    conn.close()
+            await asyncio.to_thread(_update_started)
+            return
+        # Check dispatch timeout
+        if now - _active_clean.dispatched_at > _DISPATCH_TIMEOUT_SEC:
+            log = logging.getLogger("vacuum")
+            log.warning("Clean %d: dispatch timeout (no cleaning state after %ds)",
+                        _active_clean.event_id, _DISPATCH_TIMEOUT_SEC)
+            _active_clean = None  # No credit
+            return
+        return  # Still waiting for clean to start
+
+    # Clean has started — check for completion or failure
+    if state in _SUCCESS_STATES:
+        await _resolve_clean_success()
+    elif state in _FAILURE_STATES:
+        elapsed = now - _active_clean.started_at
+        await _resolve_clean_failure(elapsed)
+
+
+# ---------------------------------------------------------------------------
+# Window dispatch loop
+# ---------------------------------------------------------------------------
+
+_window_end: float | None = None  # monotonic time
+
+
+def _open_window(budget_min: float) -> None:
+    """Open or extend the cleaning window."""
+    global _window_end
+    new_end = time.monotonic() + budget_min * 60
+    _window_end = max(_window_end or 0, new_end)
+
+
+async def _close_window() -> None:
+    """Close the cleaning window, dock vacuum if cleaning, close trigger events."""
+    global _window_end
+    _window_end = None
+    # Dock vacuum if it's currently cleaning
+    try:
+        client = _get_client()
+        status = await _cached("status", _CACHE_TTL, _fetch_status)
+        if status.get("state") in _CLEANING_STATES:
+            await client.return_to_dock()
+            _cache_invalidate("status")
+    except Exception:
+        pass
+    # Close all open trigger events
+    await scheduler.close_all_trigger_events()
+
+
+async def _check_dispatch(status: dict) -> None:
+    """If window is open and vacuum is idle, dispatch overdue rooms."""
+    global _active_clean
+    if _window_end is None:
+        return
+    now = time.monotonic()
+    if now >= _window_end:
+        # Window expired
+        await _close_window()
+        return
+
+    state = status.get("state", "")
+    in_dock = status.get("in_dock", False)
+    # Only dispatch if vacuum is idle/docked
+    if state not in ("charging", "charging_complete", "idle") and not in_dock:
+        return
+
+    remaining_sec = _window_end - now
+    remaining_min = remaining_sec / 60
+
+    # Get priority queue and select batch
+    queue = await scheduler.get_priority_queue()
+    if not queue:
+        return
+
+    log = logging.getLogger("vacuum")
+
+    # Select rooms that fit within remaining time, by priority score
+    selected: list[scheduler.PriorityEntry] = []
+    running_sec = 0.0
+    # Group by mode — dispatch the highest-priority mode batch
+    # For simplicity, take rooms from highest priority regardless of mode,
+    # then batch by the mode of the highest-priority entry
+    target_mode = queue[0].mode
+    for entry in queue:
+        if entry.mode != target_mode:
+            continue
+        if entry.estimated_sec is None:
+            selected.append(entry)
+            log.info("Window dispatch: %s (unknown duration, included)", entry.name)
+        elif running_sec + entry.estimated_sec <= remaining_sec:
+            selected.append(entry)
+            running_sec += entry.estimated_sec
+        # else: doesn't fit, skip
+
+    if not selected:
+        return
+
+    segment_ids = [e.segment_id for e in selected]
+    log.info("Window dispatch: sending %d rooms (%s) for %s, est %.0fs, window %.0fs remaining",
+             len(selected), ", ".join(e.name for e in selected), target_mode,
+             running_sec, remaining_sec)
+
+    try:
+        client = _get_client()
+        await client.clean_rooms(segment_ids)
+        event_id = await scheduler.log_clean(segment_ids, target_mode, source="auto-window")
+        per_room_ests = [e.estimated_sec for e in selected]
+        _active_clean = ActiveClean(
+            event_id=event_id,
+            segment_ids=segment_ids,
+            dispatched_at=time.monotonic(),
+            per_room_estimates=per_room_ests,
+            mode=target_mode,
+        )
+        _cache_invalidate("status")
+    except Exception as e:
+        log.error("Window dispatch failed: %s", e)
 
 
 async def _cached(key: str, ttl: float, fn):
@@ -88,13 +301,17 @@ def _cache_invalidate(*keys: str) -> None:
 
 
 async def _health_poll_loop() -> None:
-    """Background task: poll device status every 60s to warm cache and detect failures early."""
-    import logging
+    """Background task: poll device status every 60s, check active cleans, dispatch from window."""
     log = logging.getLogger("vacuum")
     while True:
         await asyncio.sleep(60)
         try:
-            await _cached("status", _CACHE_TTL, _fetch_status)
+            status = await _cached("status", _CACHE_TTL, _fetch_status)
+            # Completion monitor
+            await _check_active_clean(status)
+            # Window dispatch (only if no active clean)
+            if _active_clean is None:
+                await _check_dispatch(status)
         except Exception as e:
             log.debug("Health poll failed: %s", e)
 
@@ -109,7 +326,6 @@ async def _lifespan(app: FastAPI):
         rooms = await _client.get_rooms()
         await scheduler.sync_rooms(rooms)
     except Exception as e:
-        import logging
         logging.getLogger("vacuum").warning("Could not sync rooms on startup: %s", e)
     poller = asyncio.create_task(_health_poll_loop())
     try:
@@ -156,7 +372,6 @@ async def _maybe_reconnect() -> None:
     async with _reconnect_lock:
         if _client_failures < _MAX_FAILURES_BEFORE_RECONNECT:
             return  # Already reset by a concurrent reconnect
-        import logging
         log = logging.getLogger("vacuum")
         log.warning("Reconnecting VacuumClient after %d consecutive failures", _client_failures)
         try:
@@ -358,18 +573,32 @@ class StartCleanRequest(BaseModel):
 
 @app.post("/api/action/{name}")
 async def api_action(name: str, body: StartCleanRequest | None = None):
+    global _active_clean
     try:
         if name == "start":
             data = body.model_dump() if body else {}
             fan_speed, mop_mode, water_flow, route = _parse_settings(data)
             await _get_client().start_clean(fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route)
-            # Log whole-home clean when any settings are present
-            if body and (body.fan_speed or body.water_flow):
-                mode = _infer_clean_mode(body.fan_speed, body.water_flow)
-                rows = await scheduler.get_schedule()
-                all_ids = [r.segment_id for r in rows]
-                if all_ids:
-                    await scheduler.log_clean(all_ids, mode, source="dashboard")
+            # Log whole-home clean and populate active clean
+            mode = _infer_clean_mode(
+                body.fan_speed if body else None,
+                body.water_flow if body else None,
+            )
+            rows = await scheduler.get_schedule()
+            all_ids = [r.segment_id for r in rows]
+            if all_ids:
+                event_id = await scheduler.log_clean(all_ids, mode, source="dashboard")
+                per_room_ests = []
+                for sid in all_ids:
+                    est = await scheduler.estimate_duration([sid])
+                    per_room_ests.append(est)
+                _active_clean = ActiveClean(
+                    event_id=event_id,
+                    segment_ids=all_ids,
+                    dispatched_at=time.monotonic(),
+                    per_room_estimates=per_room_ests,
+                    mode=mode,
+                )
             _cache_invalidate("status")
             return {"ok": True}
         if name not in _ACTIONS:
@@ -414,6 +643,7 @@ class RoomsCleanRequest(BaseModel):
 
 @app.post("/api/rooms/clean")
 async def api_rooms_clean(body: RoomsCleanRequest):
+    global _active_clean
     try:
         fan_speed, mop_mode, water_flow, route = _parse_settings(body.model_dump())
         await _get_client().clean_rooms(
@@ -421,7 +651,19 @@ async def api_rooms_clean(body: RoomsCleanRequest):
             fan_speed=fan_speed, mop_mode=mop_mode, water_flow=water_flow, route=route,
         )
         mode = _infer_clean_mode(body.fan_speed, body.water_flow)
-        await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
+        event_id = await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
+        # Populate active clean for completion monitoring
+        per_room_ests = []
+        for sid in body.segment_ids:
+            est = await scheduler.estimate_duration([sid])
+            per_room_ests.append(est)
+        _active_clean = ActiveClean(
+            event_id=event_id,
+            segment_ids=body.segment_ids,
+            dispatched_at=time.monotonic(),
+            per_room_estimates=per_room_ests,
+            mode=mode,
+        )
         _cache_invalidate("status")
         return {"ok": True}
     except HTTPException:
@@ -445,6 +687,7 @@ class ScheduleRoomPatch(BaseModel):
     vacuum_days: float | None = None
     mop_days: float | None = None
     notes: str | None = None
+    priority_weight: float | None = None
 
 
 @app.patch("/api/schedule/rooms/{segment_id}")
@@ -455,7 +698,80 @@ async def api_schedule_room_patch(segment_id: int, body: ScheduleRoomPatch):
         await scheduler.set_room_interval(segment_id, "mop", body.mop_days)
     if "notes" in body.model_fields_set:
         await scheduler.set_room_notes(segment_id, body.notes)
+    if "priority_weight" in body.model_fields_set and body.priority_weight is not None:
+        await scheduler.set_room_priority(segment_id, body.priority_weight)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Trigger API endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/triggers")
+async def api_triggers_get():
+    return await scheduler.get_triggers()
+
+
+class TriggerUpsertRequest(BaseModel):
+    budget_min: float
+    mode: str = "vacuum"
+    notes: str | None = None
+
+
+@app.put("/api/triggers/{name}")
+async def api_trigger_upsert(name: str, body: TriggerUpsertRequest):
+    await scheduler.upsert_trigger(name, body.budget_min, body.mode, body.notes)
+    return {"ok": True}
+
+
+@app.delete("/api/triggers/{name}")
+async def api_trigger_delete(name: str):
+    await scheduler.delete_trigger(name)
+    return {"ok": True}
+
+
+@app.post("/api/trigger/{name}/fire")
+async def api_trigger_fire(name: str):
+    # Look up trigger
+    triggers = await scheduler.get_triggers()
+    trigger = next((t for t in triggers if t["name"] == name), None)
+    if trigger is None:
+        raise HTTPException(status_code=404, detail=f"Trigger '{name}' not found")
+    _open_window(trigger["budget_min"])
+    await scheduler.log_trigger_event(name)
+    now = time.monotonic()
+    remaining = max(0, (_window_end or 0) - now)
+    return {
+        "ok": True,
+        "window": {
+            "active": True,
+            "remaining_minutes": round(remaining / 60, 1),
+        },
+    }
+
+
+@app.post("/api/trigger/stop")
+async def api_trigger_stop():
+    await _close_window()
+    return {"ok": True, "window": {"active": False}}
+
+
+@app.get("/api/window")
+async def api_window_get():
+    now = time.monotonic()
+    active = _window_end is not None and now < _window_end
+    remaining = max(0, (_window_end or 0) - now) if active else 0
+    return {
+        "active": active,
+        "remaining_minutes": round(remaining / 60, 1) if active else 0,
+        "current_clean": {
+            "event_id": _active_clean.event_id,
+            "segment_ids": _active_clean.segment_ids,
+            "mode": _active_clean.mode,
+            "started": _active_clean.started_at is not None,
+        } if _active_clean else None,
+    }
 
 
 @app.get("/api/health")
@@ -658,6 +974,20 @@ _HTML = """<!DOCTYPE html>
   .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .settings-row { display: flex; flex-direction: column; gap: 4px; }
   .settings-label { font-size: 11px; color: var(--muted); }
+  /* Trigger buttons */
+  .trigger-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .btn-trigger { background: #1e3a5e; color: var(--accent); border: 1px solid var(--accent); }
+  .btn-trigger:hover { background: #243d5e; }
+  .btn-stop-window { background: #3d1515; color: var(--red); border: 1px solid var(--red); }
+  .window-status { margin-top: 12px; font-size: 13px; padding: 8px 12px; border-radius: 8px; }
+  .window-active { background: #1e3a2a; border: 1px solid var(--green); color: var(--green); }
+  .window-inactive { background: var(--border); color: var(--muted); }
+  /* Trigger management */
+  .trigger-mgmt-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .trigger-mgmt-row:last-child { border-bottom: none; }
+  .trigger-mgmt-info { display: flex; flex-direction: column; gap: 2px; }
+  .trigger-mgmt-name { font-weight: 500; }
+  .trigger-mgmt-detail { font-size: 12px; color: var(--muted); }
   /* Schedule panel */
   .schedule-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .schedule-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px 8px 0; font-size: 12px; }
@@ -775,6 +1105,21 @@ _HTML = """<!DOCTYPE html>
     <div class="feedback" id="action-feedback"></div>
   </div>
 
+  <!-- Triggers & Window Panel -->
+  <div class="panel" data-tab="home">
+    <div class="panel-title">Auto-Clean Triggers</div>
+    <div id="trigger-buttons" class="trigger-grid loading">Loading…</div>
+    <div id="window-status" class="window-status window-inactive">No active window</div>
+    <div class="feedback" id="trigger-feedback"></div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Manage Triggers</span>
+        <button class="btn btn-primary btn-sm" onclick="openTriggerModal()">+ Add</button>
+      </div>
+      <div id="trigger-mgmt-list"></div>
+    </div>
+  </div>
+
   <!-- Room Clean Panel -->
   <div class="panel" data-tab="clean">
     <div class="panel-title">Clean Rooms</div>
@@ -881,12 +1226,46 @@ _HTML = """<!DOCTYPE html>
       <input type="number" id="edit-mop-days" min="0.5" step="0.5" placeholder="e.g. 7">
     </div>
     <div class="modal-row">
+      <label>Priority weight (default 1.0, higher = more urgent)</label>
+      <input type="number" id="edit-priority-weight" min="0.1" step="0.1" placeholder="e.g. 1.5">
+    </div>
+    <div class="modal-row">
       <label>Notes (optional)</label>
       <input type="text" id="edit-notes" placeholder="e.g. Pets sleep here, prioritize">
     </div>
     <div class="modal-actions">
       <button class="btn btn-neutral" onclick="closeEditModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveEditModal()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Trigger edit modal -->
+<div class="modal-overlay" id="trigger-modal-overlay" onclick="if(event.target===this)closeTriggerModal()">
+  <div class="modal">
+    <h3 id="trigger-modal-title">Add Trigger</h3>
+    <div class="modal-row">
+      <label>Name</label>
+      <input type="text" id="trigger-name" placeholder="e.g. Gym, Shower, Leaving">
+    </div>
+    <div class="modal-row">
+      <label>Budget (minutes)</label>
+      <input type="number" id="trigger-budget" min="5" step="5" placeholder="e.g. 25">
+    </div>
+    <div class="modal-row">
+      <label>Mode</label>
+      <select id="trigger-mode">
+        <option value="vacuum">Vacuum</option>
+        <option value="mop">Mop</option>
+      </select>
+    </div>
+    <div class="modal-row">
+      <label>Notes (optional)</label>
+      <input type="text" id="trigger-notes" placeholder="e.g. Quick clean while at gym">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-neutral" onclick="closeTriggerModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTriggerModal()">Save</button>
     </div>
   </div>
 </div>
@@ -1265,6 +1644,7 @@ async function loadSchedule() {
           <th>Mop Due</th>
           <th>Vacuum Every</th>
           <th>Mop Every</th>
+          <th class="hide-mobile">Priority</th>
           <th></th>
         </tr>
         ${rows.map(r => {
@@ -1286,6 +1666,9 @@ async function loadSchedule() {
           const vInterval = r.vacuum_days ? r.vacuum_days + 'd' : '<span class="dim-cell">—</span>';
           const mInterval = r.mop_days    ? r.mop_days    + 'd' : '<span class="dim-cell">—</span>';
 
+          const pw = r.priority_weight != null ? r.priority_weight : 1.0;
+          const pwDisplay = pw !== 1.0 ? `<strong>${pw}</strong>` : '<span class="dim-cell">1.0</span>';
+
           return `<tr>
             <td><strong>${r.name}</strong></td>
             <td class="hide-mobile">${lv}</td>
@@ -1294,7 +1677,8 @@ async function loadSchedule() {
             <td>${mDueHtml}</td>
             <td>${vInterval}</td>
             <td>${mInterval}</td>
-            <td><button class="btn btn-neutral btn-sm" onclick="openEditModal(${r.segment_id}, '${r.name}', ${r.vacuum_days || 'null'}, ${r.mop_days || 'null'}, ${JSON.stringify(r.notes || '')})">Edit</button></td>
+            <td class="hide-mobile">${pwDisplay}</td>
+            <td><button class="btn btn-neutral btn-sm" onclick="openEditModal(${r.segment_id}, '${r.name}', ${r.vacuum_days || 'null'}, ${r.mop_days || 'null'}, ${JSON.stringify(r.notes || '')}, ${pw})">Edit</button></td>
           </tr>`;
         }).join('')}
       </table></div>`;
@@ -1307,11 +1691,12 @@ async function loadSchedule() {
 // ------------------------------------------------------------------ schedule edit modal
 let _editSegmentId = null;
 
-function openEditModal(segmentId, name, vacuumDays, mopDays, notes) {
+function openEditModal(segmentId, name, vacuumDays, mopDays, notes, priorityWeight) {
   _editSegmentId = segmentId;
   document.getElementById('edit-modal-title').textContent = name;
   document.getElementById('edit-vacuum-days').value = vacuumDays ?? '';
   document.getElementById('edit-mop-days').value    = mopDays ?? '';
+  document.getElementById('edit-priority-weight').value = priorityWeight ?? '';
   document.getElementById('edit-notes').value       = notes ?? '';
   document.querySelector('.modal-overlay').classList.add('open');
 }
@@ -1326,10 +1711,12 @@ async function saveEditModal() {
   const vd = document.getElementById('edit-vacuum-days').value;
   const md = document.getElementById('edit-mop-days').value;
   const nt = document.getElementById('edit-notes').value;
+  const pw = document.getElementById('edit-priority-weight').value;
   const body = {};
   body.vacuum_days = vd !== '' ? parseFloat(vd) : null;
   body.mop_days    = md !== '' ? parseFloat(md) : null;
   body.notes       = nt || null;
+  if (pw !== '') body.priority_weight = parseFloat(pw);
   try {
     const res = await fetch(`/api/schedule/rooms/${_editSegmentId}`, {
       method: 'PATCH',
@@ -1344,6 +1731,148 @@ async function saveEditModal() {
     }
   } catch(e) {
     alert('Save error: ' + e.message);
+  }
+}
+
+// ------------------------------------------------------------------ triggers & window
+let _triggers = [];
+
+async function loadTriggers() {
+  const btnEl = document.getElementById('trigger-buttons');
+  const mgmtEl = document.getElementById('trigger-mgmt-list');
+  try {
+    _triggers = await fetch('/api/triggers').then(r => r.json());
+    if (!_triggers.length) {
+      btnEl.innerHTML = '<span class="unavailable">No triggers configured yet. Add one below.</span>';
+      btnEl.className = '';
+      mgmtEl.innerHTML = '';
+    } else {
+      btnEl.className = 'trigger-grid';
+      btnEl.innerHTML = _triggers.map(t =>
+        `<button class="btn btn-trigger" onclick="fireTrigger('${t.name.replace(/'/g, "\\\\'")}')">${t.name} (${t.budget_min}m)</button>`
+      ).join('') +
+        `<button class="btn btn-stop-window" onclick="stopWindow()">Stop</button>`;
+      mgmtEl.innerHTML = _triggers.map(t => `
+        <div class="trigger-mgmt-row">
+          <div class="trigger-mgmt-info">
+            <span class="trigger-mgmt-name">${t.name}</span>
+            <span class="trigger-mgmt-detail">${t.budget_min}min · ${t.mode}${t.notes ? ' · ' + t.notes : ''}</span>
+          </div>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-neutral btn-sm" onclick="openTriggerModal('${t.name.replace(/'/g, "\\\\'")}', ${t.budget_min}, '${t.mode}', ${JSON.stringify(t.notes || '')})">Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteTrigger('${t.name.replace(/'/g, "\\\\'")}')">Del</button>
+          </div>
+        </div>`
+      ).join('');
+    }
+  } catch(e) {
+    btnEl.innerHTML = `<span class="unavailable">Error: ${e.message}</span>`;
+  }
+}
+
+async function loadWindowStatus() {
+  const el = document.getElementById('window-status');
+  try {
+    const w = await fetch('/api/window').then(r => r.json());
+    if (w.active) {
+      el.className = 'window-status window-active';
+      let text = `Window active — ${w.remaining_minutes} min remaining`;
+      if (w.current_clean) {
+        text += ` · Cleaning ${w.current_clean.segment_ids.length} room(s)`;
+      }
+      el.textContent = text;
+    } else {
+      el.className = 'window-status window-inactive';
+      el.textContent = 'No active window';
+    }
+  } catch(e) { /* ignore */ }
+}
+
+async function fireTrigger(name) {
+  try {
+    const res = await apiPost(`/api/trigger/${encodeURIComponent(name)}/fire`);
+    if (res.ok) {
+      setFeedback('trigger-feedback', `${name} fired! Window: ${res.window.remaining_minutes}min`, false);
+      loadWindowStatus();
+    } else {
+      setFeedback('trigger-feedback', res.detail || 'Error', true);
+    }
+  } catch(e) {
+    setFeedback('trigger-feedback', e.message, true);
+  }
+}
+
+async function stopWindow() {
+  try {
+    const res = await apiPost('/api/trigger/stop');
+    setFeedback('trigger-feedback', res.ok ? 'Window closed, vacuum docking' : (res.detail || 'Error'), !res.ok);
+    loadWindowStatus();
+    setTimeout(loadStatus, 2000);
+  } catch(e) {
+    setFeedback('trigger-feedback', e.message, true);
+  }
+}
+
+// ------------------------------------------------------------------ trigger modal
+let _editingTriggerName = null;
+
+function openTriggerModal(name, budget, mode, notes) {
+  if (name) {
+    _editingTriggerName = name;
+    document.getElementById('trigger-modal-title').textContent = 'Edit Trigger';
+    document.getElementById('trigger-name').value = name;
+    document.getElementById('trigger-name').readOnly = true;
+    document.getElementById('trigger-budget').value = budget ?? '';
+    document.getElementById('trigger-mode').value = mode || 'vacuum';
+    document.getElementById('trigger-notes').value = notes || '';
+  } else {
+    _editingTriggerName = null;
+    document.getElementById('trigger-modal-title').textContent = 'Add Trigger';
+    document.getElementById('trigger-name').value = '';
+    document.getElementById('trigger-name').readOnly = false;
+    document.getElementById('trigger-budget').value = '';
+    document.getElementById('trigger-mode').value = 'vacuum';
+    document.getElementById('trigger-notes').value = '';
+  }
+  document.getElementById('trigger-modal-overlay').classList.add('open');
+}
+
+function closeTriggerModal() {
+  document.getElementById('trigger-modal-overlay').classList.remove('open');
+  _editingTriggerName = null;
+}
+
+async function saveTriggerModal() {
+  const name = document.getElementById('trigger-name').value.trim();
+  const budget = parseFloat(document.getElementById('trigger-budget').value);
+  const mode = document.getElementById('trigger-mode').value;
+  const notes = document.getElementById('trigger-notes').value.trim() || null;
+  if (!name) { alert('Name is required'); return; }
+  if (!budget || budget <= 0) { alert('Budget must be positive'); return; }
+  try {
+    const res = await fetch(`/api/triggers/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({budget_min: budget, mode, notes}),
+    }).then(r => r.json());
+    if (res.ok) {
+      closeTriggerModal();
+      await loadTriggers();
+    } else {
+      alert('Save failed: ' + (res.detail || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Save error: ' + e.message);
+  }
+}
+
+async function deleteTrigger(name) {
+  if (!confirm(`Delete trigger "${name}"?`)) return;
+  try {
+    await fetch(`/api/triggers/${encodeURIComponent(name)}`, {method:'DELETE'});
+    await loadTriggers();
+  } catch(e) {
+    alert('Delete error: ' + e.message);
   }
 }
 
@@ -1371,7 +1900,7 @@ async function loadHealth() {
 
 // ------------------------------------------------------------------ refresh
 function refreshAll() {
-  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth];
+  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth, loadTriggers, loadWindowStatus];
   loaders.forEach((fn, i) => setTimeout(fn, i * 300));
 }
 
