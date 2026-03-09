@@ -60,10 +60,14 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE clean_events ADD COLUMN {col} {typedef}")
             except sqlite3.OperationalError:
                 pass  # column already exists
-        try:
-            conn.execute("ALTER TABLE room_schedules ADD COLUMN priority_weight REAL DEFAULT 1.0")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        for col, typedef in [
+            ("priority_weight", "REAL DEFAULT 1.0"),
+            ("default_duration_sec", "REAL"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE room_schedules ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         # Trigger tables
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS triggers (
@@ -152,6 +156,19 @@ def _set_room_priority_sync(segment_id: int, weight: float) -> None:
 async def set_room_priority(segment_id: int, weight: float) -> None:
     """Set priority weight for a room (default 1.0)."""
     await asyncio.to_thread(_set_room_priority_sync, segment_id, weight)
+
+
+def _set_room_duration_sync(segment_id: int, seconds: float | None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE room_schedules SET default_duration_sec = ? WHERE segment_id = ?",
+            (seconds, segment_id),
+        )
+
+
+async def set_room_duration(segment_id: int, seconds: float | None) -> None:
+    """Set manual duration estimate for a room (seconds), or None to clear."""
+    await asyncio.to_thread(_set_room_duration_sync, segment_id, seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +317,7 @@ class RoomSchedule:
     mop_overdue_ratio: float | None
     notes: str | None
     priority_weight: float
+    default_duration_sec: float | None
 
     def as_dict(self) -> dict:
         def _ratio(v: float | None) -> float | None:
@@ -319,6 +337,7 @@ class RoomSchedule:
             "mop_overdue_ratio": _ratio(self.mop_overdue_ratio),
             "notes": self.notes,
             "priority_weight": self.priority_weight,
+            "default_duration_sec": self.default_duration_sec,
         }
 
 
@@ -360,7 +379,7 @@ def _get_last_cleaned(
 def _get_schedule_sync() -> list[RoomSchedule]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT segment_id, name, vacuum_days, mop_days, notes, priority_weight FROM room_schedules ORDER BY name"
+            "SELECT segment_id, name, vacuum_days, mop_days, notes, priority_weight, default_duration_sec FROM room_schedules ORDER BY name"
         ).fetchall()
         result = []
         for row in rows:
@@ -381,6 +400,7 @@ def _get_schedule_sync() -> list[RoomSchedule]:
                     mop_overdue_ratio=mop_ratio,
                     notes=row["notes"],
                     priority_weight=row["priority_weight"] or 1.0,
+                    default_duration_sec=row["default_duration_sec"],
                 )
             )
     return result
@@ -489,6 +509,15 @@ def _estimate_duration_sync(segment_ids: list[int]) -> float | None:
     placeholders = ",".join("?" * n)
 
     with _connect() as conn:
+        # Tier 0: manual defaults — if all rooms have default_duration_sec, use sum + overhead
+        manual_rows = conn.execute(
+            f"SELECT segment_id, default_duration_sec FROM room_schedules WHERE segment_id IN ({placeholders})",
+            sorted_ids,
+        ).fetchall()
+        manual_map = {r["segment_id"]: r["default_duration_sec"] for r in manual_rows}
+        if all(manual_map.get(sid) is not None for sid in sorted_ids):
+            return sum(manual_map[sid] for sid in sorted_ids) + (300 if n > 1 else 0)
+
         # Tier 1: exact match — avg of events with exactly these rooms
         exact_rows = conn.execute(
             f"""

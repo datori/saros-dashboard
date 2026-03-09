@@ -688,6 +688,7 @@ class ScheduleRoomPatch(BaseModel):
     mop_days: float | None = None
     notes: str | None = None
     priority_weight: float | None = None
+    default_duration_min: float | None = None
 
 
 @app.patch("/api/schedule/rooms/{segment_id}")
@@ -700,6 +701,9 @@ async def api_schedule_room_patch(segment_id: int, body: ScheduleRoomPatch):
         await scheduler.set_room_notes(segment_id, body.notes)
     if "priority_weight" in body.model_fields_set and body.priority_weight is not None:
         await scheduler.set_room_priority(segment_id, body.priority_weight)
+    if "default_duration_min" in body.model_fields_set:
+        sec = body.default_duration_min * 60 if body.default_duration_min is not None else None
+        await scheduler.set_room_duration(segment_id, sec)
     return {"ok": True}
 
 
@@ -772,6 +776,34 @@ async def api_window_get():
             "started": _active_clean.started_at is not None,
         } if _active_clean else None,
     }
+
+
+class WindowOpenRequest(BaseModel):
+    budget_min: float
+
+
+@app.post("/api/window/open")
+async def api_window_open(body: WindowOpenRequest):
+    _open_window(body.budget_min)
+    now = time.monotonic()
+    active = _window_end is not None and now < _window_end
+    remaining = max(0, (_window_end or 0) - now) if active else 0
+    return {
+        "active": active,
+        "remaining_minutes": round(remaining / 60, 1) if active else 0,
+        "current_clean": {
+            "event_id": _active_clean.event_id,
+            "segment_ids": _active_clean.segment_ids,
+            "mode": _active_clean.mode,
+            "started": _active_clean.started_at is not None,
+        } if _active_clean else None,
+    }
+
+
+@app.get("/api/window/preview")
+async def api_window_preview():
+    queue = await scheduler.get_priority_queue()
+    return {"queue": [entry.as_dict() for entry in queue]}
 
 
 @app.get("/api/health")
@@ -996,6 +1028,23 @@ _HTML = """<!DOCTYPE html>
   .overdue-cell { color: var(--red); font-weight: 600; }
   .warning-cell { color: var(--yellow); font-weight: 600; }
   .dim-cell { color: var(--muted); }
+  /* Window planner */
+  .planner-slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .planner-slider-row label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .planner-slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  #planner-budget-label { font-size: 14px; font-weight: 600; min-width: 50px; }
+  .planner-room { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
+  .planner-room .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .planner-room .dot.selected { background: var(--accent); }
+  .planner-room .dot.excluded { border: 2px solid var(--muted); }
+  .planner-room .room-name { min-width: 90px; }
+  .planner-room .room-mode { color: var(--muted); font-size: 11px; min-width: 30px; }
+  .planner-room .room-est { color: var(--muted); font-size: 12px; min-width: 35px; text-align: right; }
+  .planner-room .room-score { color: var(--muted); font-size: 12px; min-width: 35px; text-align: right; }
+  .planner-room .bar-wrap { flex: 1; height: 10px; background: var(--border); border-radius: 5px; overflow: hidden; min-width: 60px; }
+  .planner-room .bar-fill { height: 100%; background: var(--accent); border-radius: 5px; transition: width 0.15s; }
+  .planner-divider { border-top: 1px dashed var(--border); margin: 6px 0; }
+  .planner-summary { font-size: 12px; color: var(--muted); margin-top: 8px; }
   /* Interval edit modal */
   .modal-overlay {
     display: none; position: fixed; inset: 0;
@@ -1199,6 +1248,23 @@ _HTML = """<!DOCTYPE html>
     <div class="feedback" id="routine-feedback"></div>
   </div>
 
+  <!-- Window Planner Panel -->
+  <div class="panel" data-tab="clean" style="grid-column: 1/-1; min-width: 0;">
+    <div class="panel-title">Window Planner <button class="btn btn-neutral btn-sm" onclick="loadPlannerPreview()" style="margin-left:8px;font-size:11px">Refresh</button></div>
+    <div id="planner-content">
+      <div class="planner-slider-row">
+        <label for="planner-budget">Budget:</label>
+        <input type="range" id="planner-budget" min="5" max="90" value="30" step="1">
+        <span id="planner-budget-label">30 min</span>
+      </div>
+      <div id="planner-rooms"></div>
+      <div id="planner-summary" class="planner-summary"></div>
+      <div style="margin-top:12px">
+        <button class="btn btn-primary" onclick="openWindowFromPlanner()">Open Window</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Consumables Panel -->
   <div class="panel" data-tab="home">
     <div class="panel-title" id="title-consumables">Consumables</div>
@@ -1228,6 +1294,10 @@ _HTML = """<!DOCTYPE html>
     <div class="modal-row">
       <label>Priority weight (default 1.0, higher = more urgent)</label>
       <input type="number" id="edit-priority-weight" min="0.1" step="0.1" placeholder="e.g. 1.5">
+    </div>
+    <div class="modal-row">
+      <label>Est. duration (min) — clear to use auto-estimate</label>
+      <input type="number" id="edit-duration-min" min="1" step="1" placeholder="e.g. 8">
     </div>
     <div class="modal-row">
       <label>Notes (optional)</label>
@@ -1645,6 +1715,7 @@ async function loadSchedule() {
           <th>Vacuum Every</th>
           <th>Mop Every</th>
           <th class="hide-mobile">Priority</th>
+          <th class="hide-mobile">Est.</th>
           <th></th>
         </tr>
         ${rows.map(r => {
@@ -1668,6 +1739,8 @@ async function loadSchedule() {
 
           const pw = r.priority_weight != null ? r.priority_weight : 1.0;
           const pwDisplay = pw !== 1.0 ? `<strong>${pw}</strong>` : '<span class="dim-cell">1.0</span>';
+          const durMin = r.default_duration_sec != null ? Math.round(r.default_duration_sec / 60) : null;
+          const durDisplay = durMin != null ? durMin + 'm' : '<span class="dim-cell">—</span>';
 
           return `<tr>
             <td><strong>${r.name}</strong></td>
@@ -1678,7 +1751,8 @@ async function loadSchedule() {
             <td>${vInterval}</td>
             <td>${mInterval}</td>
             <td class="hide-mobile">${pwDisplay}</td>
-            <td><button class="btn btn-neutral btn-sm" onclick='openEditModal(${r.segment_id}, ${JSON.stringify(r.name)}, ${r.vacuum_days || "null"}, ${r.mop_days || "null"}, ${JSON.stringify(r.notes || "")}, ${pw})'>Edit</button></td>
+            <td class="hide-mobile">${durDisplay}</td>
+            <td><button class="btn btn-neutral btn-sm" onclick='openEditModal(${r.segment_id}, ${JSON.stringify(r.name)}, ${r.vacuum_days || "null"}, ${r.mop_days || "null"}, ${JSON.stringify(r.notes || "")}, ${pw}, ${r.default_duration_sec != null ? (r.default_duration_sec / 60) : "null"})'>Edit</button></td>
           </tr>`;
         }).join('')}
       </table></div>`;
@@ -1691,12 +1765,13 @@ async function loadSchedule() {
 // ------------------------------------------------------------------ schedule edit modal
 let _editSegmentId = null;
 
-function openEditModal(segmentId, name, vacuumDays, mopDays, notes, priorityWeight) {
+function openEditModal(segmentId, name, vacuumDays, mopDays, notes, priorityWeight, durationMin) {
   _editSegmentId = segmentId;
   document.getElementById('edit-modal-title').textContent = name;
   document.getElementById('edit-vacuum-days').value = vacuumDays ?? '';
   document.getElementById('edit-mop-days').value    = mopDays ?? '';
   document.getElementById('edit-priority-weight').value = priorityWeight ?? '';
+  document.getElementById('edit-duration-min').value = durationMin ?? '';
   document.getElementById('edit-notes').value       = notes ?? '';
   document.querySelector('.modal-overlay').classList.add('open');
 }
@@ -1712,11 +1787,13 @@ async function saveEditModal() {
   const md = document.getElementById('edit-mop-days').value;
   const nt = document.getElementById('edit-notes').value;
   const pw = document.getElementById('edit-priority-weight').value;
+  const dur = document.getElementById('edit-duration-min').value;
   const body = {};
   body.vacuum_days = vd !== '' ? parseFloat(vd) : null;
   body.mop_days    = md !== '' ? parseFloat(md) : null;
   body.notes       = nt || null;
   if (pw !== '') body.priority_weight = parseFloat(pw);
+  body.default_duration_min = dur !== '' ? parseFloat(dur) : null;
   try {
     const res = await fetch(`/api/schedule/rooms/${_editSegmentId}`, {
       method: 'PATCH',
@@ -1900,8 +1977,109 @@ async function loadHealth() {
 
 // ------------------------------------------------------------------ refresh
 function refreshAll() {
-  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth, loadTriggers, loadWindowStatus];
+  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth, loadTriggers, loadWindowStatus, loadPlannerPreview];
   loaders.forEach((fn, i) => setTimeout(fn, i * 300));
+}
+
+// ------------------------------------------------------------------ window planner
+let _plannerQueue = [];
+
+async function loadPlannerPreview() {
+  try {
+    const data = await fetch('/api/window/preview').then(r => r.json());
+    _plannerQueue = data.queue || [];
+    renderPlanner();
+  } catch(e) {
+    document.getElementById('planner-rooms').innerHTML =
+      `<span class="unavailable">Preview unavailable: ${e.message}</span>`;
+  }
+}
+
+function renderPlanner() {
+  const budget = parseInt(document.getElementById('planner-budget').value, 10);
+  document.getElementById('planner-budget-label').textContent = budget + ' min';
+  const budgetSec = budget * 60;
+  const roomsEl = document.getElementById('planner-rooms');
+  const summaryEl = document.getElementById('planner-summary');
+
+  if (!_plannerQueue.length) {
+    roomsEl.innerHTML = '<span class="dim-cell">No overdue rooms</span>';
+    summaryEl.textContent = '';
+    return;
+  }
+
+  // Batch selection: mode from top entry, greedy fill
+  const targetMode = _plannerQueue[0].mode;
+  const selected = [];
+  const excluded = [];
+  let runSec = 0;
+
+  for (const entry of _plannerQueue) {
+    if (entry.mode !== targetMode) { excluded.push({...entry, reason: 'mode'}); continue; }
+    const est = entry.estimated_sec;
+    if (est == null) {
+      selected.push({...entry, cumul: runSec});
+    } else if (runSec + est <= budgetSec) {
+      runSec += est;
+      selected.push({...entry, cumul: runSec});
+    } else {
+      excluded.push({...entry, reason: 'budget'});
+    }
+  }
+
+  let html = '';
+  for (const r of selected) {
+    const estMin = r.estimated_sec != null ? Math.round(r.estimated_sec / 60) + 'm' : '?';
+    const score = r.priority_score != null ? r.priority_score.toFixed(1) : '∞';
+    const pct = budgetSec > 0 ? Math.min(100, (r.cumul / budgetSec) * 100) : 0;
+    html += `<div class="planner-room">
+      <span class="dot selected"></span>
+      <span class="room-name">${r.name}</span>
+      <span class="room-mode">${r.mode}</span>
+      <span class="room-est">${estMin}</span>
+      <span class="room-score">${score}</span>
+      <span class="bar-wrap"><span class="bar-fill" style="width:${pct.toFixed(1)}%"></span></span>
+    </div>`;
+  }
+
+  if (excluded.length) {
+    html += '<div class="planner-divider"></div>';
+    for (const r of excluded) {
+      const estMin = r.estimated_sec != null ? Math.round(r.estimated_sec / 60) + 'm' : '?';
+      const score = r.priority_score != null ? r.priority_score.toFixed(1) : '∞';
+      const note = r.reason === 'mode' ? r.mode : "won't fit";
+      html += `<div class="planner-room">
+        <span class="dot excluded"></span>
+        <span class="room-name" style="color:var(--muted)">${r.name}</span>
+        <span class="room-mode">${note}</span>
+        <span class="room-est" style="opacity:0.5">${estMin}</span>
+        <span class="room-score" style="opacity:0.5">${score}</span>
+        <span class="bar-wrap"></span>
+      </div>`;
+    }
+  }
+
+  roomsEl.innerHTML = html;
+  const totalMin = Math.round(runSec / 60);
+  summaryEl.textContent = selected.length
+    ? `${selected.length} room${selected.length > 1 ? 's' : ''} · ${totalMin} min of ${budget} min budget`
+    : 'No rooms fit in budget';
+}
+
+document.getElementById('planner-budget').addEventListener('input', renderPlanner);
+
+async function openWindowFromPlanner() {
+  const budget = parseInt(document.getElementById('planner-budget').value, 10);
+  try {
+    await fetch('/api/window/open', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({budget_min: budget}),
+    });
+    await loadWindowStatus();
+  } catch(e) {
+    alert('Failed to open window: ' + e.message);
+  }
 }
 
 // ------------------------------------------------------------------ tabs
