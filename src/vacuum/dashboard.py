@@ -186,6 +186,24 @@ async def _close_window() -> None:
     await scheduler.close_all_trigger_events()
 
 
+_ENUM_MAP = {
+    "fan_speed": {e.name.lower(): e for e in FanSpeed},
+    "mop_mode": {e.name.lower(): e for e in MopMode},
+    "water_flow": {e.name.lower(): e for e in WaterFlow},
+    "route": {e.name.lower(): e for e in CleanRoute},
+}
+
+
+def _parse_dispatch_settings(settings: dict) -> dict:
+    """Convert string setting names to enum values, skipping None values."""
+    result = {}
+    for field, enum_map in _ENUM_MAP.items():
+        val = settings.get(field)
+        if val is not None and val.lower() in enum_map:
+            result[field] = enum_map[val.lower()]
+    return result
+
+
 async def _check_dispatch(status: dict) -> None:
     """If window is open and vacuum is idle, dispatch overdue rooms."""
     global _active_clean
@@ -241,7 +259,10 @@ async def _check_dispatch(status: dict) -> None:
 
     try:
         client = _get_client()
-        await client.clean_rooms(segment_ids)
+        # Apply mode-specific dispatch settings
+        ds = await scheduler.get_dispatch_settings()
+        dkwargs = _parse_dispatch_settings(ds.get(target_mode, {}))
+        await client.clean_rooms(segment_ids, **dkwargs)
         event_id = await scheduler.log_clean(segment_ids, target_mode, source="auto-window")
         per_room_ests = [e.estimated_sec for e in selected]
         _active_clean = ActiveClean(
@@ -806,6 +827,27 @@ async def api_window_preview():
     return {"queue": [entry.as_dict() for entry in queue]}
 
 
+@app.get("/api/dispatch-settings")
+async def api_dispatch_settings_get():
+    return await scheduler.get_dispatch_settings()
+
+
+class DispatchSettingsPatch(BaseModel):
+    fan_speed: str | None = None
+    mop_mode: str | None = None
+    water_flow: str | None = None
+    route: str | None = None
+
+
+@app.patch("/api/dispatch-settings/{mode}")
+async def api_dispatch_settings_patch(mode: str, body: DispatchSettingsPatch):
+    if mode not in ("vacuum", "mop"):
+        raise HTTPException(status_code=400, detail="Mode must be 'vacuum' or 'mop'")
+    updates = {k: v for k, v in body.model_dump().items() if k in body.model_fields_set}
+    await scheduler.update_dispatch_settings(mode, **updates)
+    return {"ok": True}
+
+
 @app.get("/api/health")
 async def api_health():
     now = time.monotonic()
@@ -1166,6 +1208,10 @@ _HTML = """<!DOCTYPE html>
         <button class="btn btn-primary btn-sm" onclick="openTriggerModal()">+ Add</button>
       </div>
       <div id="trigger-mgmt-list"></div>
+    </div>
+    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Dispatch Settings</span>
+      <div id="dispatch-settings" style="margin-top:8px"></div>
     </div>
   </div>
 
@@ -1977,8 +2023,61 @@ async function loadHealth() {
 
 // ------------------------------------------------------------------ refresh
 function refreshAll() {
-  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth, loadTriggers, loadWindowStatus, loadPlannerPreview];
+  const loaders = [loadStatus, loadRooms, loadRoutines, loadConsumables, loadHistory, loadSettings, loadSchedule, loadHealth, loadTriggers, loadWindowStatus, loadPlannerPreview, loadDispatchSettings];
   loaders.forEach((fn, i) => setTimeout(fn, i * 300));
+}
+
+// ------------------------------------------------------------------ dispatch settings
+const _FAN_SPEEDS = ['off','quiet','balanced','turbo','max','max_plus','smart'];
+const _MOP_MODES = ['standard','fast','deep','deep_plus','smart'];
+const _WATER_FLOWS = ['off','low','medium','high','extreme','smart'];
+const _ROUTES = ['standard','fast','deep','deep_plus','smart'];
+
+async function loadDispatchSettings() {
+  const el = document.getElementById('dispatch-settings');
+  try {
+    const settings = await fetch('/api/dispatch-settings').then(r => r.json());
+    let html = '';
+    for (const mode of ['vacuum', 'mop']) {
+      const s = settings[mode] || {};
+      html += `<div style="margin-bottom:10px">
+        <span style="font-size:12px;font-weight:600;text-transform:capitalize">${mode}</span>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;margin-top:4px;font-size:12px">
+          <label style="color:var(--muted)">Fan speed</label>
+          ${_makeSelect(mode, 'fan_speed', s.fan_speed, _FAN_SPEEDS)}
+          <label style="color:var(--muted)">Mop mode</label>
+          ${_makeSelect(mode, 'mop_mode', s.mop_mode, _MOP_MODES)}
+          <label style="color:var(--muted)">Water flow</label>
+          ${_makeSelect(mode, 'water_flow', s.water_flow, _WATER_FLOWS)}
+          <label style="color:var(--muted)">Route</label>
+          ${_makeSelect(mode, 'route', s.route, _ROUTES)}
+        </div>
+      </div>`;
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = `<span class="unavailable">${e.message}</span>`;
+  }
+}
+
+function _makeSelect(mode, field, current, options) {
+  const opts = ['<option value=""' + (current == null ? ' selected' : '') + '>—</option>']
+    .concat(options.map(o => `<option value="${o}"${o === current ? ' selected' : ''}>${o.replace(/_/g,' ')}</option>`));
+  return `<select onchange="saveDispatchSetting('${mode}','${field}',this.value)" style="font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px">${opts.join('')}</select>`;
+}
+
+async function saveDispatchSetting(mode, field, value) {
+  const body = {};
+  body[field] = value || null;
+  try {
+    await fetch(`/api/dispatch-settings/${mode}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+  } catch(e) {
+    alert('Failed to save: ' + e.message);
+  }
 }
 
 // ------------------------------------------------------------------ window planner

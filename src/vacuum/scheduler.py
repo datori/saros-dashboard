@@ -84,6 +84,22 @@ def init_db() -> None:
                 actual_min     REAL,
                 clean_event_id INTEGER
             );
+            CREATE TABLE IF NOT EXISTS dispatch_settings (
+                mode       TEXT PRIMARY KEY,
+                fan_speed  TEXT,
+                mop_mode   TEXT,
+                water_flow TEXT,
+                route      TEXT
+            );
+        """)
+        # Seed default dispatch settings if not present
+        conn.execute("""
+            INSERT OR IGNORE INTO dispatch_settings (mode, fan_speed, mop_mode, water_flow, route)
+            VALUES ('vacuum', 'balanced', NULL, 'off', NULL)
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO dispatch_settings (mode, fan_speed, mop_mode, water_flow, route)
+            VALUES ('mop', 'off', 'standard', 'medium', NULL)
         """)
 
 
@@ -258,6 +274,44 @@ async def close_all_trigger_events() -> None:
     triggers = await get_triggers()
     for t in triggers:
         await close_trigger_event(t["name"])
+
+
+# ---------------------------------------------------------------------------
+# Dispatch settings
+# ---------------------------------------------------------------------------
+
+def _get_dispatch_settings_sync() -> dict:
+    with _connect() as conn:
+        rows = conn.execute("SELECT mode, fan_speed, mop_mode, water_flow, route FROM dispatch_settings").fetchall()
+        return {row["mode"]: {
+            "fan_speed": row["fan_speed"],
+            "mop_mode": row["mop_mode"],
+            "water_flow": row["water_flow"],
+            "route": row["route"],
+        } for row in rows}
+
+
+async def get_dispatch_settings() -> dict:
+    """Return dispatch settings keyed by mode (vacuum, mop)."""
+    return await asyncio.to_thread(_get_dispatch_settings_sync)
+
+
+_DISPATCH_SETTING_FIELDS = {"fan_speed", "mop_mode", "water_flow", "route"}
+
+
+def _update_dispatch_settings_sync(mode: str, **kwargs) -> None:
+    updates = {k: v for k, v in kwargs.items() if k in _DISPATCH_SETTING_FIELDS}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [mode]
+    with _connect() as conn:
+        conn.execute(f"UPDATE dispatch_settings SET {set_clause} WHERE mode = ?", values)
+
+
+async def update_dispatch_settings(mode: str, **kwargs) -> None:
+    """Update dispatch settings for a mode. Only provided fields are changed."""
+    await asyncio.to_thread(_update_dispatch_settings_sync, mode, **kwargs)
 
 
 # ---------------------------------------------------------------------------
