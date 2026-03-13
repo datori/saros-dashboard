@@ -11,5 +11,10 @@ venv/
 .env
 .roborock_session.json
 
+# Runtime data
+vacuum_schedule.db
+vacuum_schedule.db-shm
+vacuum_schedule.db-wal
+
 # Editor
 .DS_Store

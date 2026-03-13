@@ -16,7 +16,7 @@ src/vacuum/
 **Entry points** (defined in `pyproject.toml`):
 - `vacuum` — CLI
 - `vacuum-mcp` — MCP server
-- `vacuum-dashboard` — web dashboard (default port 8080; port 8080 is occupied on this machine by another process, use `--port 8181`)
+- `vacuum-dashboard` — web dashboard (default port 8080; if that port is occupied, use `--port 8181` or any free port)
 
 **Install**: `pip3 install -e .` (system Python, no venv — `python3-venv` not installed)
 
@@ -100,23 +100,22 @@ await client.set_water_flow(WaterFlow.HIGH)
 
 ```python
 rooms = await client.get_rooms()
-# [Room(id=1, name='Bedroom'), Room(id=2, name='Closet'), ...]
+# [Room(id=1, name='Living room'), Room(id=2, name='Kitchen'), ...]
 
 mapping = await client.rooms_by_name()
-# {'bedroom': 1, 'closet': 2, ...}
+# {'living room': 1, 'kitchen': 2, ...}
 ```
 
-**Known room segment IDs on this device:**
+**Room segment IDs** are stable per-device and visible in the Roborock app map view. Example layout (yours will differ):
 
-| ID | Name        |
-|----|-------------|
-| 1  | Bedroom     |
-| 2  | Closet      |
-| 3  | Bathroom    |
-| 4  | Kitchen     |
-| 5  | Living room |
-| 6  | Study       |
-| 7  | Hall        |
+| ID | Name         |
+|----|--------------|
+| 1  | Living room  |
+| 2  | Kitchen      |
+| 3  | Bedroom      |
+| ...| ...          |
+
+Run `vacuum map` to discover your actual segment IDs.
 
 ### Room / Zone Cleaning
 
@@ -264,14 +263,14 @@ Integration requires a running Matter controller (`python-matter-server` WebSock
 
 **in_dock is derived**: The library doesn't expose a direct `in_dock` boolean — it's inferred from `state` codes 8 (charging) and 100 (charging_complete).
 
-**LAN IP detection**: `socket.gethostbyname(socket.gethostname())` returns 127.x on this machine. Use the UDP connect trick instead:
+**LAN IP detection**: `socket.gethostbyname(socket.gethostname())` may return 127.x on some Linux hosts. Use the UDP connect trick instead:
 ```python
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.connect(("8.8.8.8", 80))
-lan_ip = s.getsockname()[0]  # → "192.168.0.180"
+lan_ip = s.getsockname()[0]  # → your LAN IP
 ```
 
-**Port 8080 conflict**: Port 8080 is occupied by another process (`finance-dashboa`, pid ~866531). Default dashboard port works fine at 8181.
+**Port 8080 conflict**: If port 8080 is occupied by another process, pass `--port` to use a different port (e.g. `vacuum-dashboard --port 8181`).
 
 **No `fuser` command**: `fuser` is not installed. Use `pkill -f vacuum-dashboard` to kill dashboard processes, or `ps aux | grep vacuum-dashboard` to find PIDs.
 
@@ -281,5 +280,4 @@ lan_ip = s.getsockname()[0]  # → "192.168.0.180"
 
 - **Python**: system Python 3 (`/usr/bin/python3`), no venv
 - **Install**: `pip3 install -e .`
-- **OS**: Linux (Proxmox VE host, kernel 6.8.12)
-- **LAN IP**: 192.168.0.180
+- **OS**: Linux

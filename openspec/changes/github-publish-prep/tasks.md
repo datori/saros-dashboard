@@ -38,4 +38,4 @@
 
 ## 7. Add openspec/ to git tracking
 
-- [ ] 7.1 `git add openspec/` to stage all untracked openspec files (changes/, specs/, archives/)
+- [x] 7.1 `git add openspec/` to stage all untracked openspec files (changes/, specs/, archives/)
