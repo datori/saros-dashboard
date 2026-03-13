@@ -4,7 +4,7 @@ Controlling a Roborock Saros 10R programmatically requires either the official a
 
 ## What Changes
 
-- New Python project scaffolded in `/home/openclaw/code/vacuum/`
+- New Python project scaffolded (`saros-dashboard`)
 - Custom CLI (`vacuum`) for running commands, routines, and schedules from the terminal
 - Custom MCP server exposing vacuum control as tools for AI assistant use
 - Configuration layer for credentials and device selection

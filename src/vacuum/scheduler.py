@@ -356,6 +356,79 @@ async def update_clean_duration(
 
 
 # ---------------------------------------------------------------------------
+# History reconciliation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UnreconciledEvent:
+    event_id: int
+    dispatched_at: str  # ISO 8601 UTC
+    mode: str
+    source: str
+    segment_ids: list[int]
+
+
+def _get_unreconciled_events_sync(max_age_hours: float = 2.0) -> list[UnreconciledEvent]:
+    """Return clean_events with complete=0 dispatched within max_age_hours."""
+    cutoff = datetime.now(timezone.utc)
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, dispatched_at, mode, source
+            FROM clean_events
+            WHERE complete = 0
+            ORDER BY dispatched_at DESC
+            """,
+        ).fetchall()
+        result = []
+        for row in rows:
+            dispatched = datetime.fromisoformat(row["dispatched_at"])
+            if dispatched.tzinfo is None:
+                dispatched = dispatched.replace(tzinfo=timezone.utc)
+            age_hours = (cutoff - dispatched).total_seconds() / 3600
+            if age_hours > max_age_hours:
+                continue
+            seg_rows = conn.execute(
+                "SELECT segment_id FROM clean_event_rooms WHERE clean_event_id = ?",
+                (row["id"],),
+            ).fetchall()
+            result.append(UnreconciledEvent(
+                event_id=row["id"],
+                dispatched_at=row["dispatched_at"],
+                mode=row["mode"],
+                source=row["source"],
+                segment_ids=[r["segment_id"] for r in seg_rows],
+            ))
+        return result
+
+
+async def get_unreconciled_events(max_age_hours: float = 2.0) -> list[UnreconciledEvent]:
+    """Return unreconciled clean events (complete=0) within max_age_hours."""
+    return await asyncio.to_thread(_get_unreconciled_events_sync, max_age_hours)
+
+
+def _reconcile_event_sync(
+    event_id: int, duration_sec: float | None, area_m2: float | None, complete: bool
+) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE clean_events
+            SET duration_sec = ?, area_m2 = ?, complete = ?
+            WHERE id = ?
+            """,
+            (duration_sec, area_m2, 1 if complete else 0, event_id),
+        )
+
+
+async def reconcile_event(
+    event_id: int, duration_sec: float | None, area_m2: float | None, complete: bool
+) -> None:
+    """Update a clean event with device-reported data from history reconciliation."""
+    await asyncio.to_thread(_reconcile_event_sync, event_id, duration_sec, area_m2, complete)
+
+
+# ---------------------------------------------------------------------------
 # Schedule queries
 # ---------------------------------------------------------------------------
 

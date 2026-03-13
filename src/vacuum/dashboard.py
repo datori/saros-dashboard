@@ -7,7 +7,7 @@ import logging
 import time
 import webbrowser
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -60,99 +60,105 @@ class ActiveClean:
     event_id: int
     segment_ids: list[int]
     dispatched_at: float  # monotonic time
-    started_at: float | None = None  # monotonic time
-    per_room_estimates: list[float | None] = field(default_factory=list)
     mode: str = "vacuum"
 
 
 _active_clean: ActiveClean | None = None
 
 
-async def _resolve_clean_success() -> None:
-    """Mark all rooms complete, clear active clean."""
-    global _active_clean
-    if _active_clean is None:
-        return
-    log = logging.getLogger("vacuum")
-    elapsed = time.monotonic() - (_active_clean.started_at or _active_clean.dispatched_at)
-    log.info("Clean %d completed successfully (%.0fs)", _active_clean.event_id, elapsed)
-    await scheduler.update_clean_duration(_active_clean.event_id, elapsed)
-    _active_clean = None
-
-
-async def _resolve_clean_failure(elapsed_sec: float) -> None:
-    """Apply partial credit for interrupted multi-room cleans, clear active clean."""
-    global _active_clean
-    if _active_clean is None:
-        return
-    log = logging.getLogger("vacuum")
-    log.warning("Clean %d failed/interrupted at %.0fs", _active_clean.event_id, elapsed_sec)
-
-    # Compute partial credit via cumulative milestones
-    estimates = _active_clean.per_room_estimates
-    segment_ids = _active_clean.segment_ids
-    credited_ids: list[int] = []
-
-    if len(segment_ids) > 1 and estimates and all(e is not None for e in estimates):
-        cumulative = 0.0
-        for i, est in enumerate(estimates):
-            cumulative += est
-            if cumulative <= elapsed_sec:
-                credited_ids.append(segment_ids[i])
-
-    if credited_ids:
-        log.info("Partial credit: %d/%d rooms credited", len(credited_ids), len(segment_ids))
-        # Create a new complete event for credited rooms
-        mode = _active_clean.mode
-        event_id = await scheduler.log_clean(credited_ids, mode, source="auto-partial")
-        await scheduler.update_clean_duration(event_id, elapsed_sec)
-    else:
-        log.info("No rooms credited for interrupted clean")
-
-    # Original event stays with complete=0
-    _active_clean = None
-
-
 async def _check_active_clean(status: dict) -> None:
-    """Check vacuum state against _active_clean, detect transitions."""
+    """Monitor vacuum state for UI feedback. Credit is handled by history reconciliation."""
     global _active_clean
     if _active_clean is None:
         return
 
+    log = logging.getLogger("vacuum")
     state = status.get("state", "")
     now = time.monotonic()
 
-    # Detect started
-    if _active_clean.started_at is None:
-        if state in _CLEANING_STATES:
-            _active_clean.started_at = now
-            # Update started_at in DB
-            started_iso = datetime.now(timezone.utc).isoformat()
-            def _update_started():
-                conn = scheduler._connect()
-                try:
-                    conn.execute("UPDATE clean_events SET started_at = ? WHERE id = ?",
-                                 (started_iso, _active_clean.event_id))
-                    conn.commit()
-                finally:
-                    conn.close()
-            await asyncio.to_thread(_update_started)
-            return
-        # Check dispatch timeout
-        if now - _active_clean.dispatched_at > _DISPATCH_TIMEOUT_SEC:
-            log = logging.getLogger("vacuum")
-            log.warning("Clean %d: dispatch timeout (no cleaning state after %ds)",
-                        _active_clean.event_id, _DISPATCH_TIMEOUT_SEC)
-            _active_clean = None  # No credit
-            return
-        return  # Still waiting for clean to start
-
-    # Clean has started — check for completion or failure
+    # Vacuum returned to dock — clean is done (or was never started). Clear UI state.
     if state in _SUCCESS_STATES:
-        await _resolve_clean_success()
-    elif state in _FAILURE_STATES:
-        elapsed = now - _active_clean.started_at
-        await _resolve_clean_failure(elapsed)
+        log.info("Clean %d: vacuum docked, clearing active clean (reconciler handles credit)",
+                 _active_clean.event_id)
+        _active_clean = None
+        return
+
+    # Vacuum is idle (not docked) — unusual but clear UI state
+    if state in _FAILURE_STATES and state != "error":
+        log.info("Clean %d: vacuum idle, clearing active clean", _active_clean.event_id)
+        _active_clean = None
+        return
+
+    # Error state — do NOT clear; vacuum may recover
+    if state == "error":
+        log.info("Clean %d: vacuum in error state, keeping active clean (may recover)",
+                 _active_clean.event_id)
+        return
+
+    # Dispatch timeout — clear UI state but don't mark event as failed
+    if state not in _CLEANING_STATES and now - _active_clean.dispatched_at > _DISPATCH_TIMEOUT_SEC:
+        log.warning("Clean %d: dispatch timeout (%.0fs), clearing active clean",
+                    _active_clean.event_id, now - _active_clean.dispatched_at)
+        _active_clean = None
+
+
+# ---------------------------------------------------------------------------
+# History reconciliation
+# ---------------------------------------------------------------------------
+
+_MATCH_WINDOW_SEC = 600  # ±10 minutes for timestamp matching
+
+
+async def _reconcile_clean_events() -> None:
+    """Match unreconciled scheduler events against device clean history."""
+    log = logging.getLogger("vacuum")
+    unreconciled = await scheduler.get_unreconciled_events()
+    if not unreconciled:
+        return
+
+    try:
+        client = _get_client()
+        history = await client.get_clean_history(limit=5)
+    except Exception as e:
+        log.debug("Reconciliation: failed to fetch device history: %s", e)
+        return
+
+    if not history:
+        return
+
+    for event in unreconciled:
+        dispatched = datetime.fromisoformat(event.dispatched_at)
+        if dispatched.tzinfo is None:
+            dispatched = dispatched.replace(tzinfo=timezone.utc)
+
+        best_match = None
+        best_delta = float("inf")
+
+        for record in history:
+            if record.start_time is None:
+                continue
+            record_start = datetime.fromisoformat(record.start_time)
+            if record_start.tzinfo is None:
+                record_start = record_start.replace(tzinfo=timezone.utc)
+            delta = abs((record_start - dispatched).total_seconds())
+            if delta <= _MATCH_WINDOW_SEC and delta < best_delta:
+                best_match = record
+                best_delta = delta
+
+        if best_match is None:
+            continue
+
+        await scheduler.reconcile_event(
+            event.event_id,
+            duration_sec=best_match.duration_seconds,
+            area_m2=best_match.area_m2,
+            complete=best_match.complete,
+        )
+        status = "complete" if best_match.complete else "incomplete"
+        log.info(
+            "Reconciled event %d (%s, delta=%.0fs): %s",
+            event.event_id, event.source, best_delta, status,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +270,10 @@ async def _check_dispatch(status: dict) -> None:
         dkwargs = _parse_dispatch_settings(ds.get(target_mode, {}))
         await client.clean_rooms(segment_ids, **dkwargs)
         event_id = await scheduler.log_clean(segment_ids, target_mode, source="auto-window")
-        per_room_ests = [e.estimated_sec for e in selected]
         _active_clean = ActiveClean(
             event_id=event_id,
             segment_ids=segment_ids,
             dispatched_at=time.monotonic(),
-            per_room_estimates=per_room_ests,
             mode=target_mode,
         )
         _cache_invalidate("status")
@@ -322,14 +326,16 @@ def _cache_invalidate(*keys: str) -> None:
 
 
 async def _health_poll_loop() -> None:
-    """Background task: poll device status every 60s, check active cleans, dispatch from window."""
+    """Background task: poll device status every 60s, reconcile history, dispatch from window."""
     log = logging.getLogger("vacuum")
     while True:
         await asyncio.sleep(60)
         try:
             status = await _cached("status", _CACHE_TTL, _fetch_status)
-            # Completion monitor
+            # Active clean UI monitor
             await _check_active_clean(status)
+            # History reconciliation — credit via device history
+            await _reconcile_clean_events()
             # Window dispatch (only if no active clean)
             if _active_clean is None:
                 await _check_dispatch(status)
@@ -609,15 +615,10 @@ async def api_action(name: str, body: StartCleanRequest | None = None):
             all_ids = [r.segment_id for r in rows]
             if all_ids:
                 event_id = await scheduler.log_clean(all_ids, mode, source="dashboard")
-                per_room_ests = []
-                for sid in all_ids:
-                    est = await scheduler.estimate_duration([sid])
-                    per_room_ests.append(est)
                 _active_clean = ActiveClean(
                     event_id=event_id,
                     segment_ids=all_ids,
                     dispatched_at=time.monotonic(),
-                    per_room_estimates=per_room_ests,
                     mode=mode,
                 )
             _cache_invalidate("status")
@@ -673,16 +674,10 @@ async def api_rooms_clean(body: RoomsCleanRequest):
         )
         mode = _infer_clean_mode(body.fan_speed, body.water_flow)
         event_id = await scheduler.log_clean(body.segment_ids, mode, source="dashboard")
-        # Populate active clean for completion monitoring
-        per_room_ests = []
-        for sid in body.segment_ids:
-            est = await scheduler.estimate_duration([sid])
-            per_room_ests.append(est)
         _active_clean = ActiveClean(
             event_id=event_id,
             segment_ids=body.segment_ids,
             dispatched_at=time.monotonic(),
-            per_room_estimates=per_room_ests,
             mode=mode,
         )
         _cache_invalidate("status")
@@ -794,7 +789,7 @@ async def api_window_get():
             "event_id": _active_clean.event_id,
             "segment_ids": _active_clean.segment_ids,
             "mode": _active_clean.mode,
-            "started": _active_clean.started_at is not None,
+            "started": True,
         } if _active_clean else None,
     }
 
@@ -816,7 +811,7 @@ async def api_window_open(body: WindowOpenRequest):
             "event_id": _active_clean.event_id,
             "segment_ids": _active_clean.segment_ids,
             "mode": _active_clean.mode,
-            "started": _active_clean.started_at is not None,
+            "started": True,
         } if _active_clean else None,
     }
 

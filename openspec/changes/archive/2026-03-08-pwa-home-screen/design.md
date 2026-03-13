@@ -1,6 +1,6 @@
 ## Context
 
-The dashboard is a single FastAPI app with all HTML/CSS/JS embedded in one Python string (`_HTML` in `dashboard.py`). There are no static files, no asset pipeline. The server runs at `http://192.168.0.180:8181` over plain HTTP on the local network.
+The dashboard is a single FastAPI app with all HTML/CSS/JS embedded in one Python string (`_HTML` in `dashboard.py`). There are no static files, no asset pipeline. The server runs over plain HTTP on the local network (e.g. `http://<your-lan-ip>:8181`).
 
 iOS "Add to Home Screen" requires:
 1. A Web App Manifest (`/manifest.json`) with `"display": "standalone"` and icon references
