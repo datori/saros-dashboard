@@ -898,11 +898,19 @@ _HTML = """<!DOCTYPE html>
   }
   header h1 { font-size: 20px; font-weight: 600; }
   header .refresh-info { color: var(--muted); font-size: 12px; margin-left: auto; }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 16px;
-  }
+  /* Cockpit layout — mobile default (stacked) */
+  #cockpit { display: flex; flex-direction: column; gap: 16px; }
+  #sidebar { display: contents; }
+  #right-pane { display: contents; }
+  #right-tab-bar { display: none; }
+  /* Scope toggle for Clean Rooms panel */
+  .scope-toggle { display: flex; gap: 16px; margin-bottom: 12px; font-size: 13px; }
+  .scope-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .scope-toggle input[type=radio] { accent-color: var(--accent); }
+  /* Right-pane tab bar (desktop only) */
+  .right-tab-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 8px; transition: color 0.15s, background 0.15s; }
+  .right-tab-btn:hover { color: var(--text); background: var(--border); }
+  .right-tab-btn.active { color: var(--accent); background: #1a2744; }
   .panel {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1104,12 +1112,24 @@ _HTML = """<!DOCTYPE html>
   .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
   /* Table scroll wrapper */
   .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  /* Tab bar */
+  /* Mobile bottom tab bar */
   #tab-bar { display: none; }
   .tab-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; flex: 1; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 10px; padding: 8px 0; transition: color 0.15s; }
   .tab-btn .tab-icon { font-size: 20px; line-height: 1; }
   .tab-btn.active { color: var(--accent); }
-  @media (max-width: 639px) {
+  /* Desktop cockpit layout (≥ 900px) */
+  @media (min-width: 900px) {
+    #cockpit { flex-direction: row; align-items: flex-start; }
+    #sidebar { display: flex; flex-direction: column; gap: 16px; width: 320px; flex-shrink: 0; position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; }
+    #right-pane { display: flex; flex-direction: column; gap: 16px; flex: 1; min-width: 0; max-width: 640px; }
+    #right-tab-bar { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; }
+    #right-pane[data-active-right-tab="rooms"]    [data-right-tab]:not([data-right-tab="rooms"])    { display: none; }
+    #right-pane[data-active-right-tab="routines"] [data-right-tab]:not([data-right-tab="routines"]) { display: none; }
+    #right-pane[data-active-right-tab="triggers"] [data-right-tab]:not([data-right-tab="triggers"]) { display: none; }
+    #right-pane[data-active-right-tab="info"]     [data-right-tab]:not([data-right-tab="info"])     { display: none; }
+  }
+  /* Mobile layout (< 900px) */
+  @media (max-width: 899px) {
     .hide-mobile { display: none !important; }
     #tab-bar {
       display: flex;
@@ -1123,9 +1143,10 @@ _HTML = """<!DOCTYPE html>
       z-index: 50;
     }
     body { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
-    body[data-active-tab="home"] [data-tab]:not([data-tab="home"]) { display: none; }
+    body[data-active-tab="now"]   [data-tab]:not([data-tab="now"])   { display: none; }
     body[data-active-tab="clean"] [data-tab]:not([data-tab="clean"]) { display: none; }
-    body[data-active-tab="info"] [data-tab]:not([data-tab="info"]) { display: none; }
+    body[data-active-tab="plan"]  [data-tab]:not([data-tab="plan"])  { display: none; }
+    body[data-active-tab="info"]  [data-tab]:not([data-tab="info"])  { display: none; }
   }
 </style>
 </head>
@@ -1146,179 +1167,175 @@ _HTML = """<!DOCTYPE html>
 </header>
 
 <div id="connectivity-banner"></div>
-<div class="grid">
+<div id="cockpit">
 
-  <!-- Status Panel -->
-  <div class="panel" data-tab="home">
-    <div class="panel-title" id="title-status">Status</div>
-    <div id="status-content" class="loading">Loading…</div>
-    <div class="last-updated" id="status-updated"></div>
-  </div>
+  <div id="sidebar">
 
-  <!-- Actions Panel -->
-  <div class="panel" data-tab="home">
-    <div class="panel-title">Actions</div>
-    <div class="actions-grid">
-      <button class="btn btn-primary" onclick="doAction('start')">▶ Start</button>
-      <button class="btn btn-danger"  onclick="doAction('stop')">■ Stop</button>
-      <button class="btn btn-warning" onclick="doAction('pause')">⏸ Pause</button>
-      <button class="btn btn-neutral" onclick="doAction('dock')">⏏ Dock</button>
-      <button class="btn btn-neutral" onclick="doAction('locate')">🔔 Locate</button>
+    <!-- Status Panel -->
+    <div class="panel" data-tab="now">
+      <div class="panel-title" id="title-status">Status</div>
+      <div id="status-content" class="loading">Loading…</div>
+      <div class="last-updated" id="status-updated"></div>
     </div>
-    <div style="margin-top:12px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Start clean overrides (optional)</div>
-      <div class="settings-grid">
-        <div class="settings-row">
-          <span class="settings-label">Clean Mode</span>
-          <select id="start-clean-mode" onchange="applyCleanMode('start', this.value)">
-            <option value="">— no preference —</option>
-            <option value="vacuum">Vacuum only</option>
-            <option value="mop">Mop only</option>
-            <option value="both">Both (simultaneous)</option>
-            <option value="vac_then_mop">Vacuum, then Mop</option>
-          </select>
+
+    <!-- Actions Panel (quick buttons only) -->
+    <div class="panel" data-tab="now">
+      <div class="panel-title">Actions</div>
+      <div class="actions-grid">
+        <button class="btn btn-primary" onclick="doAction('start')">▶ Start</button>
+        <button class="btn btn-danger"  onclick="doAction('stop')">■ Stop</button>
+        <button class="btn btn-warning" onclick="doAction('pause')">⏸ Pause</button>
+        <button class="btn btn-neutral" onclick="doAction('dock')">⏏ Dock</button>
+        <button class="btn btn-neutral" onclick="doAction('locate')">🔔 Locate</button>
+      </div>
+      <div class="feedback" id="action-feedback"></div>
+    </div>
+
+    <!-- Consumables Panel -->
+    <div class="panel" data-tab="info">
+      <div class="panel-title" id="title-consumables">Consumables</div>
+      <div id="consumables-content" class="loading">Loading…</div>
+    </div>
+
+  </div><!-- /#sidebar -->
+
+  <div id="right-pane">
+
+    <div id="right-tab-bar">
+      <button class="right-tab-btn" id="rtab-rooms"    onclick="activateRightTab('rooms')">Rooms</button>
+      <button class="right-tab-btn" id="rtab-routines" onclick="activateRightTab('routines')">Routines</button>
+      <button class="right-tab-btn" id="rtab-triggers" onclick="activateRightTab('triggers')">Triggers</button>
+      <button class="right-tab-btn" id="rtab-info"     onclick="activateRightTab('info')">Info</button>
+    </div>
+
+    <!-- Room Clean Panel -->
+    <div class="panel" data-right-tab="rooms" data-tab="clean">
+      <div class="panel-title">Clean Rooms</div>
+      <div class="scope-toggle">
+        <label><input type="radio" name="clean-scope" id="scope-all" value="all" onchange="updateCleanScope()"> All rooms</label>
+        <label><input type="radio" name="clean-scope" id="scope-select" value="select" checked onchange="updateCleanScope()"> Select rooms</label>
+      </div>
+      <div id="room-check-list" class="checkbox-list loading">Loading…</div>
+      <div style="margin-top:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Override settings (optional)</div>
+        <div class="settings-grid">
+          <div class="settings-row">
+            <span class="settings-label">Clean Mode</span>
+            <select id="rooms-clean-mode" onchange="applyCleanMode(this.value)">
+              <option value="">— no preference —</option>
+              <option value="vacuum">Vacuum only</option>
+              <option value="mop">Mop only</option>
+              <option value="both">Both (simultaneous)</option>
+              <option value="vac_then_mop">Vacuum, then Mop</option>
+            </select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Fan Speed</span>
+            <select id="rooms-fan-speed"><option value="">— device default —</option><option>QUIET</option><option>BALANCED</option><option>TURBO</option><option>MAX</option><option>MAX_PLUS</option><option>OFF</option></select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Mop Mode</span>
+            <select id="rooms-mop-mode"><option value="">— device default —</option><option>STANDARD</option><option>FAST</option><option>DEEP</option><option>DEEP_PLUS</option></select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Water Flow</span>
+            <select id="rooms-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option><option>VAC_THEN_MOP</option></select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Route</span>
+            <select id="rooms-route"><option value="">— device default —</option><option>STANDARD</option><option>FAST</option><option>DEEP</option><option>DEEP_PLUS</option></select>
+          </div>
         </div>
-        <div class="settings-row">
-          <span class="settings-label">Fan Speed</span>
-          <select id="start-fan-speed"><option value="">— device default —</option><option>QUIET</option><option>BALANCED</option><option>TURBO</option><option>MAX</option><option>MAX_PLUS</option><option>OFF</option></select>
+      </div>
+      <div class="form-row" style="margin-top:12px">
+        <label>Repeat:</label>
+        <input type="number" id="repeat-count" value="1" min="1" max="3">
+        <button class="btn btn-primary" onclick="startCleanFromRooms(this)">Start Clean</button>
+      </div>
+      <div class="feedback" id="rooms-clean-feedback"></div>
+    </div>
+
+    <!-- Routines Panel -->
+    <div class="panel" data-right-tab="routines" data-tab="clean">
+      <div class="panel-title" id="title-routines">Routines</div>
+      <div id="routines-content" class="loading">Loading…</div>
+      <div class="feedback" id="routine-feedback"></div>
+    </div>
+
+    <!-- Triggers & Window Panel -->
+    <div class="panel" data-right-tab="triggers" data-tab="plan">
+      <div class="panel-title">Auto-Clean Triggers</div>
+      <div id="trigger-buttons" class="trigger-grid loading">Loading…</div>
+      <div id="window-status" class="window-status window-inactive">No active window</div>
+      <div class="feedback" id="trigger-feedback"></div>
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Manage Triggers</span>
+          <button class="btn btn-primary btn-sm" onclick="openTriggerModal()">+ Add</button>
         </div>
-        <div class="settings-row">
-          <span class="settings-label">Water Flow</span>
-          <select id="start-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option><option>VAC_THEN_MOP</option></select>
+        <div id="trigger-mgmt-list"></div>
+      </div>
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Dispatch Settings</span>
+        <div id="dispatch-settings" style="margin-top:8px"></div>
+      </div>
+    </div>
+
+    <!-- Window Planner Panel -->
+    <div class="panel" data-right-tab="triggers" data-tab="plan">
+      <div class="panel-title">Window Planner <button class="btn btn-neutral btn-sm" onclick="loadPlannerPreview()" style="margin-left:8px;font-size:11px">Refresh</button></div>
+      <div id="planner-content">
+        <div class="planner-slider-row">
+          <label for="planner-budget">Budget:</label>
+          <input type="range" id="planner-budget" min="5" max="90" value="30" step="1">
+          <span id="planner-budget-label">30 min</span>
+        </div>
+        <div id="planner-rooms"></div>
+        <div id="planner-summary" class="planner-summary"></div>
+        <div style="margin-top:12px">
+          <button class="btn btn-primary" onclick="openWindowFromPlanner()">Open Window</button>
         </div>
       </div>
     </div>
-    <div class="feedback" id="action-feedback"></div>
-  </div>
 
-  <!-- Triggers & Window Panel -->
-  <div class="panel" data-tab="home">
-    <div class="panel-title">Auto-Clean Triggers</div>
-    <div id="trigger-buttons" class="trigger-grid loading">Loading…</div>
-    <div id="window-status" class="window-status window-inactive">No active window</div>
-    <div class="feedback" id="trigger-feedback"></div>
-    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Manage Triggers</span>
-        <button class="btn btn-primary btn-sm" onclick="openTriggerModal()">+ Add</button>
-      </div>
-      <div id="trigger-mgmt-list"></div>
-    </div>
-    <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-weight:600">Dispatch Settings</span>
-      <div id="dispatch-settings" style="margin-top:8px"></div>
-    </div>
-  </div>
-
-  <!-- Room Clean Panel -->
-  <div class="panel" data-tab="clean">
-    <div class="panel-title">Clean Rooms</div>
-    <div id="room-check-list" class="checkbox-list loading">Loading…</div>
-    <div class="form-row">
-      <label>Repeat:</label>
-      <input type="number" id="repeat-count" value="1" min="1" max="3">
-      <button class="btn btn-primary" onclick="cleanRooms()">Clean Selected</button>
-    </div>
-    <div style="margin-top:12px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Override settings (optional)</div>
-      <div class="settings-grid">
-        <div class="settings-row">
-          <span class="settings-label">Clean Mode</span>
-          <select id="rooms-clean-mode" onchange="applyCleanMode('rooms', this.value)">
-            <option value="">— no preference —</option>
-            <option value="vacuum">Vacuum only</option>
-            <option value="mop">Mop only</option>
-            <option value="both">Both (simultaneous)</option>
-            <option value="vac_then_mop">Vacuum, then Mop</option>
-          </select>
-        </div>
+    <!-- Clean Settings Panel -->
+    <div class="panel" data-right-tab="info" data-tab="info">
+      <div class="panel-title" id="title-settings">Clean Settings</div>
+      <div class="settings-grid" id="settings-content">
         <div class="settings-row">
           <span class="settings-label">Fan Speed</span>
-          <select id="rooms-fan-speed"><option value="">— device default —</option><option>QUIET</option><option>BALANCED</option><option>TURBO</option><option>MAX</option><option>MAX_PLUS</option><option>OFF</option></select>
+          <select id="set-fan-speed"><option value="">Loading…</option></select>
         </div>
         <div class="settings-row">
           <span class="settings-label">Mop Mode</span>
-          <select id="rooms-mop-mode"><option value="">— device default —</option><option>STANDARD</option><option>FAST</option><option>DEEP</option><option>DEEP_PLUS</option></select>
+          <select id="set-mop-mode"><option value="">Loading…</option></select>
         </div>
         <div class="settings-row">
           <span class="settings-label">Water Flow</span>
-          <select id="rooms-water-flow"><option value="">— device default —</option><option>OFF</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>EXTREME</option><option>VAC_THEN_MOP</option></select>
-        </div>
-        <div class="settings-row">
-          <span class="settings-label">Route</span>
-          <select id="rooms-route"><option value="">— device default —</option><option>STANDARD</option><option>FAST</option><option>DEEP</option><option>DEEP_PLUS</option></select>
+          <select id="set-water-flow"><option value="">Loading…</option></select>
         </div>
       </div>
+      <div class="form-row" style="margin-top:12px">
+        <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+      </div>
+      <div class="feedback" id="settings-feedback"></div>
     </div>
-    <div class="feedback" id="rooms-clean-feedback"></div>
-  </div>
 
-  <!-- Clean Settings Panel -->
-  <div class="panel" data-tab="clean">
-    <div class="panel-title" id="title-settings">Clean Settings</div>
-    <div class="settings-grid" id="settings-content">
-      <div class="settings-row">
-        <span class="settings-label">Fan Speed</span>
-        <select id="set-fan-speed"><option value="">Loading…</option></select>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Mop Mode</span>
-        <select id="set-mop-mode"><option value="">Loading…</option></select>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Water Flow</span>
-        <select id="set-water-flow"><option value="">Loading…</option></select>
-      </div>
+    <!-- Schedule Panel -->
+    <div class="panel" data-right-tab="info" data-tab="info">
+      <div class="panel-title">Cleaning Schedule</div>
+      <div id="schedule-content" class="loading">Loading…</div>
     </div>
-    <div class="form-row" style="margin-top:12px">
-      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+
+    <!-- Clean History Panel -->
+    <div class="panel" data-right-tab="info" data-tab="info">
+      <div class="panel-title" id="title-history">Clean History (last 10)</div>
+      <div id="history-content" class="loading">Loading…</div>
     </div>
-    <div class="feedback" id="settings-feedback"></div>
-  </div>
 
-  <!-- Schedule Panel -->
-  <div class="panel" data-tab="info" style="grid-column: 1/-1; min-width: 0;">
-    <div class="panel-title">Cleaning Schedule</div>
-    <div id="schedule-content" class="loading">Loading…</div>
-  </div>
+  </div><!-- /#right-pane -->
 
-  <!-- Routines Panel -->
-  <div class="panel" data-tab="clean">
-    <div class="panel-title" id="title-routines">Routines</div>
-    <div id="routines-content" class="loading">Loading…</div>
-    <div class="feedback" id="routine-feedback"></div>
-  </div>
-
-  <!-- Window Planner Panel -->
-  <div class="panel" data-tab="clean" style="grid-column: 1/-1; min-width: 0;">
-    <div class="panel-title">Window Planner <button class="btn btn-neutral btn-sm" onclick="loadPlannerPreview()" style="margin-left:8px;font-size:11px">Refresh</button></div>
-    <div id="planner-content">
-      <div class="planner-slider-row">
-        <label for="planner-budget">Budget:</label>
-        <input type="range" id="planner-budget" min="5" max="90" value="30" step="1">
-        <span id="planner-budget-label">30 min</span>
-      </div>
-      <div id="planner-rooms"></div>
-      <div id="planner-summary" class="planner-summary"></div>
-      <div style="margin-top:12px">
-        <button class="btn btn-primary" onclick="openWindowFromPlanner()">Open Window</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Consumables Panel -->
-  <div class="panel" data-tab="home">
-    <div class="panel-title" id="title-consumables">Consumables</div>
-    <div id="consumables-content" class="loading">Loading…</div>
-  </div>
-
-  <!-- Clean History Panel -->
-  <div class="panel" data-tab="info" style="grid-column: 1/-1; min-width: 0;">
-    <div class="panel-title" id="title-history">Clean History (last 10)</div>
-    <div id="history-content" class="loading">Loading…</div>
-  </div>
-
-</div>
+</div><!-- /#cockpit -->
 
 <!-- Interval edit modal -->
 <div class="modal-overlay" onclick="if(event.target===this)closeEditModal()">
@@ -1502,31 +1519,6 @@ async function loadRooms() {
   }
 }
 
-async function cleanRooms() {
-  const checked = [...document.querySelectorAll('#room-check-list input:checked')];
-  if (!checked.length) { setFeedback('rooms-clean-feedback', 'Select at least one room.', true); return; }
-  const ids = checked.map(c => parseInt(c.value));
-  const repeat = parseInt(document.getElementById('repeat-count').value) || 1;
-  const body = {segment_ids: ids, repeat};
-  const fs = document.getElementById('rooms-fan-speed').value;
-  const mm = document.getElementById('rooms-mop-mode').value;
-  const wf = document.getElementById('rooms-water-flow').value;
-  const rt = document.getElementById('rooms-route').value;
-  if (fs) body.fan_speed = fs;
-  if (mm) body.mop_mode = mm;
-  if (wf) body.water_flow = wf;
-  if (rt) body.route = rt;
-  const btn = event.target;
-  btn.disabled = true;
-  try {
-    const res = await apiPost('/api/rooms/clean', body);
-    setFeedback('rooms-clean-feedback', res.ok ? 'Cleaning started!' : (res.detail || 'Error'), !res.ok);
-  } catch(e) {
-    setFeedback('rooms-clean-feedback', e.message, true);
-  } finally {
-    btn.disabled = false;
-  }
-}
 
 // ------------------------------------------------------------------ routines
 async function loadRoutines() {
@@ -1569,9 +1561,9 @@ async function runRoutine(btn, name) {
 }
 
 // ------------------------------------------------------------------ clean mode
-function applyCleanMode(prefix, mode) {
-  const fs = document.getElementById(prefix + '-fan-speed');
-  const wf = document.getElementById(prefix + '-water-flow');
+function applyCleanMode(mode) {
+  const fs = document.getElementById('rooms-fan-speed');
+  const wf = document.getElementById('rooms-water-flow');
   if (!fs || !wf) return;
   if (mode === 'vacuum') {
     fs.value = '';
@@ -1591,26 +1583,64 @@ function applyCleanMode(prefix, mode) {
   }
 }
 
+// ------------------------------------------------------------------ scope toggle
+function updateCleanScope() {
+  const all = document.getElementById('scope-all').checked;
+  document.getElementById('room-check-list').style.display = all ? 'none' : '';
+}
+
 // ------------------------------------------------------------------ actions
 async function doAction(name) {
   const btns = document.querySelectorAll('.actions-grid .btn');
   btns.forEach(b => b.disabled = true);
   setFeedback('action-feedback', '');
   try {
-    let body = {};
-    if (name === 'start') {
-      const fs = document.getElementById('start-fan-speed').value;
-      const wf = document.getElementById('start-water-flow').value;
-      if (fs) body.fan_speed = fs;
-      if (wf) body.water_flow = wf;
-    }
-    const res = await apiPost('/api/action/' + name, body);
+    const res = await apiPost('/api/action/' + name, {});
     setFeedback('action-feedback', res.ok ? `${name} sent!` : (res.detail || 'Error'), !res.ok);
     if (name !== 'locate') setTimeout(loadStatus, 2000);
   } catch(e) {
     setFeedback('action-feedback', e.message, true);
   } finally {
     btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function startCleanFromRooms(btn) {
+  const all = document.getElementById('scope-all').checked;
+  btn.disabled = true;
+  setFeedback('rooms-clean-feedback', '');
+  try {
+    if (all) {
+      const body = {};
+      const fs = document.getElementById('rooms-fan-speed').value;
+      const wf = document.getElementById('rooms-water-flow').value;
+      if (fs) body.fan_speed = fs;
+      if (wf) body.water_flow = wf;
+      const res = await apiPost('/api/action/start', body);
+      setFeedback('rooms-clean-feedback', res.ok ? 'Cleaning started!' : (res.detail || 'Error'), !res.ok);
+      if (res.ok) setTimeout(loadStatus, 2000);
+    } else {
+      const checked = [...document.querySelectorAll('#room-check-list input:checked')];
+      if (!checked.length) { setFeedback('rooms-clean-feedback', 'Select at least one room.', true); return; }
+      const ids = checked.map(c => parseInt(c.value));
+      const repeat = parseInt(document.getElementById('repeat-count').value) || 1;
+      const body = {segment_ids: ids, repeat};
+      const fs = document.getElementById('rooms-fan-speed').value;
+      const mm = document.getElementById('rooms-mop-mode').value;
+      const wf = document.getElementById('rooms-water-flow').value;
+      const rt = document.getElementById('rooms-route').value;
+      if (fs) body.fan_speed = fs;
+      if (mm) body.mop_mode = mm;
+      if (wf) body.water_flow = wf;
+      if (rt) body.route = rt;
+      const res = await apiPost('/api/rooms/clean', body);
+      setFeedback('rooms-clean-feedback', res.ok ? 'Cleaning started!' : (res.detail || 'Error'), !res.ok);
+      if (res.ok) setTimeout(loadStatus, 2000);
+    }
+  } catch(e) {
+    setFeedback('rooms-clean-feedback', e.message, true);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -2184,7 +2214,17 @@ function activateTab(tab) {
     btn.classList.toggle('active', btn.id === 'tab-' + tab);
   });
 }
-activateTab(sessionStorage.getItem('activeTab') || 'home');
+activateTab(sessionStorage.getItem('activeTab') || 'now');
+
+function activateRightTab(tab) {
+  const pane = document.getElementById('right-pane');
+  pane.dataset.activeRightTab = tab;
+  sessionStorage.setItem('activeRightTab', tab);
+  document.querySelectorAll('.right-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.id === 'rtab-' + tab);
+  });
+}
+activateRightTab(sessionStorage.getItem('activeRightTab') || 'rooms');
 
 // Initial load + auto-refresh
 refreshAll();
@@ -2192,9 +2232,10 @@ setInterval(refreshAll, 30000);
 </script>
 
 <nav id="tab-bar">
-  <button class="tab-btn" id="tab-home" onclick="activateTab('home')"><span class="tab-icon">🏠</span>Home</button>
+  <button class="tab-btn" id="tab-now"   onclick="activateTab('now')"><span class="tab-icon">🏠</span>Now</button>
   <button class="tab-btn" id="tab-clean" onclick="activateTab('clean')"><span class="tab-icon">🧹</span>Clean</button>
-  <button class="tab-btn" id="tab-info" onclick="activateTab('info')"><span class="tab-icon">📊</span>Info</button>
+  <button class="tab-btn" id="tab-plan"  onclick="activateTab('plan')"><span class="tab-icon">📅</span>Plan</button>
+  <button class="tab-btn" id="tab-info"  onclick="activateTab('info')"><span class="tab-icon">📊</span>Info</button>
 </nav>
 </body>
 </html>"""

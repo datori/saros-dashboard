@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Mobile bottom tab bar
 The dashboard SHALL display a fixed bottom tab bar on viewports narrower than 900px. The tab bar SHALL contain four tabs: **Now**, **Clean**, **Plan**, and **Info**. On viewports 900px and wider, the tab bar SHALL be hidden and the cockpit layout (sidebar + right-pane tabs) takes over.
