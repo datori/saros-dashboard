@@ -1,27 +1,27 @@
 ## ADDED Requirements
 
 ### Requirement: Dashboard visual theme
-The dashboard SHALL use the GitHub Dark Dimmed color palette for its base background, surface, border, text, and muted colors.
+The dashboard SHALL use a Linear-inspired lifted dark palette — a blue-gray charcoal with lifted surfaces, increased chroma for atmosphere, and brighter text. All colors are implemented via oklch CSS variables.
 
 #### Scenario: Background color
 - **WHEN** the dashboard page is loaded
-- **THEN** the page background SHALL be `#22272e`
+- **THEN** the page background SHALL be `oklch(24% 0.018 240)`
 
 #### Scenario: Card/surface color
 - **WHEN** any card or panel is rendered
-- **THEN** its background SHALL be `#2d333b`
+- **THEN** its background SHALL be `oklch(27% 0.018 240)`
 
 #### Scenario: Border color
 - **WHEN** any card border or divider is rendered
-- **THEN** its color SHALL be `#444c56`
+- **THEN** its color SHALL be `oklch(37% 0.018 240)`
 
 #### Scenario: Primary text color
 - **WHEN** primary text is rendered
-- **THEN** its color SHALL be `#adbac7`
+- **THEN** its color SHALL be `oklch(84% 0.012 220)`
 
 #### Scenario: Muted text color
 - **WHEN** secondary/muted text is rendered
-- **THEN** its color SHALL be `#768390`
+- **THEN** its color SHALL be `oklch(63% 0.012 220)`
 
 #### Scenario: Badge backgrounds are proportionally lifted
 - **WHEN** a status badge is rendered
@@ -255,6 +255,30 @@ The system SHALL display clean mode and optional settings overrides below the St
 #### Scenario: Start clean with no overrides uses device defaults
 - **WHEN** no clean mode is selected and no overrides are set
 - **THEN** `POST /api/action/start` SHALL be called with no body (device defaults apply), matching prior behavior
+
+### Requirement: Desktop three-column cockpit layout
+On desktop viewports (≥ lg, 1024px), the dashboard SHALL use a three-column layout:
+- **Column 1 (left, fixed ~320px)**: Status, Actions, Consumables panels — sticky sidebar
+- **Column 2 (center, flex-1)**: Tabbed panel area — Rooms, Routines, Triggers, Info tabs
+- **Column 3 (right, fixed ~320px)**: Cleaning Schedule — always visible, sticky
+
+On mobile (< md) and tablet (md–lg) the existing two-column/tab layout is unchanged. The Schedule panel remains accessible on the mobile Now tab and the tablet Info right-tab.
+
+#### Scenario: Schedule persistent on desktop
+- **WHEN** the viewport is ≥ 1024px
+- **THEN** the Cleaning Schedule SHALL be visible at all times in the third column, regardless of which center tab is active
+
+#### Scenario: Schedule not duplicated on desktop
+- **WHEN** the viewport is ≥ 1024px
+- **THEN** the Cleaning Schedule SHALL NOT appear inside the center-pane Info tab
+
+#### Scenario: Schedule accessible on mobile
+- **WHEN** the viewport is < 768px
+- **THEN** the Cleaning Schedule SHALL appear on the Now tab (as the first panel)
+
+#### Scenario: Schedule accessible on tablet
+- **WHEN** the viewport is ≥ 768px and < 1024px
+- **THEN** the Cleaning Schedule SHALL appear in the center-pane Info right-tab
 
 ### Requirement: Schedule panel in dashboard UI
 The system SHALL display a "Schedule" panel showing per-room cleaning status, overdue indicators, and interval configuration.
