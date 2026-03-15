@@ -1,10 +1,5 @@
-## REMOVED Requirements
-
-### Requirement: Rooms panel
-**Reason**: The Rooms panel displays a raw list of room segment IDs and names, which is not useful for daily operation. Room data is still fetched internally for the Clean Rooms checkbox list.
-**Migration**: No migration needed. The `GET /api/rooms` endpoint remains; only the UI panel is removed. The `_rooms` JS global is still populated by `loadCleanRooms()`.
-
 ## ADDED Requirements
+
 ### Requirement: Schedule panel visual
 The dashboard SHALL display the cleaning schedule as a Gantt timeline visualization. The previous table layout (text columns for Vac Due, Mop Due, Every) SHALL be replaced by the timeline track view defined in the `schedule-gantt` spec. The panel title, tab placement (Info tab on mobile, Info right-tab on desktop), and Edit room functionality (via EditModal) SHALL remain unchanged.
 
@@ -15,4 +10,3 @@ The dashboard SHALL display the cleaning schedule as a Gantt timeline visualizat
 #### Scenario: Edit room button still accessible
 - **WHEN** user interacts with a room row
 - **THEN** an Edit button remains accessible that opens the EditModal for interval and notes configuration
-
