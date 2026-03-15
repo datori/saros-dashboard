@@ -13,9 +13,9 @@ The dashboard SHALL display a fixed bottom tab bar on viewports narrower than 90
 
 ### Requirement: Panel tab assignment
 Each dashboard panel SHALL be assigned to exactly one mobile tab via a `data-tab` attribute. Assignments SHALL be:
-- **Now**: Status panel, Actions panel
+- **Now**: Cleaning Schedule panel, Status panel, Actions panel
 - **Clean**: Clean Rooms panel (with scope toggle + overrides), Routines panel
-- **Plan**: Cleaning Schedule panel, Window Planner panel, Auto-Clean Triggers panel
+- **Plan**: Window Planner panel, Auto-Clean Triggers panel
 - **Info**: Clean Settings panel, Consumables panel, Clean History panel
 
 #### Scenario: Active tab shows its panels

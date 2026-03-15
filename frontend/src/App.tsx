@@ -125,8 +125,8 @@ export default function App() {
             <RoutinesPanel refreshKey={refreshKey} />
           </div>
 
-          {/* Schedule — mobile: Plan tab (top); desktop: Info right-tab */}
-          <div className={panelClass(activeTab === 'plan', 'info', activeRightTab)}>
+          {/* Schedule — mobile: Now tab (first); desktop: Info right-tab */}
+          <div className={`${panelClass(activeTab === 'now', 'info', activeRightTab)} order-first md:order-none`}>
             <SchedulePanel refreshKey={refreshKey} />
           </div>
 
