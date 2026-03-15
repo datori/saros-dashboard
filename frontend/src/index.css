@@ -6,24 +6,24 @@
 
 /* Dashboard dark palette mapped to shadcn CSS variables */
 :root {
-  --background: oklch(18% 0.012 240);      /* #22272e */
-  --foreground: oklch(76% 0.012 220);      /* #adbac7 */
-  --card: oklch(21% 0.012 240);            /* #2d333b */
-  --card-foreground: oklch(76% 0.012 220);
-  --popover: oklch(21% 0.012 240);
-  --popover-foreground: oklch(76% 0.012 220);
+  --background: oklch(24% 0.018 240);
+  --foreground: oklch(84% 0.012 220);
+  --card: oklch(27% 0.018 240);
+  --card-foreground: oklch(84% 0.012 220);
+  --popover: oklch(27% 0.018 240);
+  --popover-foreground: oklch(84% 0.012 220);
   --primary: oklch(64% 0.18 245);          /* #4f8ef7 */
   --primary-foreground: oklch(100% 0 0);
-  --secondary: oklch(28% 0.012 240);
-  --secondary-foreground: oklch(76% 0.012 220);
-  --muted: oklch(28% 0.012 240);
-  --muted-foreground: oklch(55% 0.012 220); /* #768390 */
-  --accent: oklch(28% 0.012 240);
-  --accent-foreground: oklch(76% 0.012 220);
+  --secondary: oklch(33% 0.018 240);
+  --secondary-foreground: oklch(84% 0.012 220);
+  --muted: oklch(33% 0.018 240);
+  --muted-foreground: oklch(63% 0.012 220);
+  --accent: oklch(33% 0.018 240);
+  --accent-foreground: oklch(84% 0.012 220);
   --destructive: oklch(55% 0.22 25);        /* #ef4444 */
   --destructive-foreground: oklch(100% 0 0);
-  --border: oklch(32% 0.012 240);           /* #444c56 */
-  --input: oklch(32% 0.012 240);
+  --border: oklch(37% 0.018 240);
+  --input: oklch(37% 0.018 240);
   --ring: oklch(64% 0.18 245);
   --radius: 0.5rem;
 

@@ -13,6 +13,12 @@ interface StatusData {
   error?: string
 }
 
+interface WindowStatus {
+  active: boolean
+  remaining_minutes: number
+  current_clean?: { segment_ids: number[] }
+}
+
 function stateVariant(state: string | null): 'default' | 'secondary' | 'destructive' | 'outline' {
   if (!state) return 'secondary'
   if (state.toLowerCase().includes('clean')) return 'default'
@@ -23,11 +29,16 @@ function stateVariant(state: string | null): 'default' | 'secondary' | 'destruct
 
 export default function StatusPanel({ refreshKey }: { refreshKey: number }) {
   const [data, setData] = useState<StatusData | null>(null)
+  const [windowStatus, setWindowStatus] = useState<WindowStatus | null>(null)
   const [updated, setUpdated] = useState<string>('')
 
   useEffect(() => {
-    apiGet<StatusData>('/api/status').then(d => {
+    Promise.all([
+      apiGet<StatusData>('/api/status'),
+      apiGet<WindowStatus>('/api/window').catch(() => null),
+    ]).then(([d, w]) => {
       setData(d)
+      setWindowStatus(w)
       setUpdated('Updated ' + new Date().toLocaleTimeString())
     }).catch(() => {})
   }, [refreshKey])
@@ -60,6 +71,20 @@ export default function StatusPanel({ refreshKey }: { refreshKey: number }) {
               <Badge variant="destructive">{data.error_code}</Badge>
             </div>
           ) : null}
+          {windowStatus && (
+            <div
+              className="rounded-lg px-3 py-2 text-sm my-2"
+              style={windowStatus.active
+                ? { background: '#1e3a2a', border: '1px solid #22c55e', color: '#22c55e' }
+                : { background: 'var(--color-border)', color: 'var(--color-muted-foreground)' }
+              }
+            >
+              {windowStatus.active
+                ? `Window active — ${windowStatus.remaining_minutes} min remaining${windowStatus.current_clean ? ` · Cleaning ${windowStatus.current_clean.segment_ids.length} room(s)` : ''}`
+                : 'No active window'
+              }
+            </div>
+          )}
           <div className="pt-3">
             <div className="flex justify-between text-sm mb-1.5">
               <span>Battery</span>

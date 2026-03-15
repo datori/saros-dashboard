@@ -57,6 +57,8 @@ export default function App() {
         paddingBottom: 'calc(max(20px, env(safe-area-inset-bottom)) + 56px)',
       }}
     >
+      <div className="max-w-[1400px] mx-auto">
+
       {/* Header */}
       <header className="flex items-center gap-3 mb-6">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
@@ -86,7 +88,7 @@ export default function App() {
       <div className="flex flex-col gap-4 md:flex-row md:items-start">
 
         {/* Sidebar */}
-        <div className="contents md:flex md:flex-col md:gap-4 md:w-80 md:shrink-0 md:sticky md:top-5 md:max-h-[calc(100vh-40px)] md:overflow-y-auto">
+        <div className="contents md:flex md:flex-col md:gap-4 md:w-[360px] md:shrink-0 md:sticky md:top-5 md:max-h-[calc(100vh-40px)] md:overflow-y-auto">
           <div className={activeTab === 'now' ? '' : 'hidden md:block'}>
             <StatusPanel refreshKey={refreshKey} />
           </div>
@@ -125,8 +127,8 @@ export default function App() {
             <RoutinesPanel refreshKey={refreshKey} />
           </div>
 
-          {/* Schedule — mobile: Now tab (first); desktop: Info right-tab */}
-          <div className={`${panelClass(activeTab === 'now', 'info', activeRightTab)} order-first md:order-none`}>
+          {/* Schedule — mobile: Now tab (first); tablet: Info right-tab; desktop(lg+): column 3 */}
+          <div className={`${panelClass(activeTab === 'now', 'info', activeRightTab)} order-first md:order-none lg:hidden`}>
             <SchedulePanel refreshKey={refreshKey} />
           </div>
 
@@ -150,7 +152,14 @@ export default function App() {
             <HistoryPanel refreshKey={refreshKey} />
           </div>
         </div>
+
+        {/* Schedule column — desktop (lg+) persistent */}
+        <div className="hidden lg:flex lg:flex-col lg:gap-4 lg:w-[360px] lg:shrink-0 lg:sticky lg:top-5 lg:max-h-[calc(100vh-40px)] lg:overflow-y-auto">
+          <SchedulePanel refreshKey={refreshKey} />
+        </div>
       </div>
+
+      </div>{/* end centering wrapper */}
 
       {/* Mobile bottom tab bar */}
       <nav
