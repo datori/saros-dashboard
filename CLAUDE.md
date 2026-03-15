@@ -18,13 +18,13 @@ frontend/         # React + Vite + TypeScript + Tailwind CSS + shadcn/ui
     components/             # One file per panel + shared UI components
     lib/api.ts              # apiGet/apiPost/apiPatch helpers
   dist/                     # Production build output (served by FastAPI)
-  vite.config.ts            # Vite 7 config; proxies /api/* → :8181 in dev
+  vite.config.ts            # Vite 7 config; proxies /api/* → :9103 in dev
 ```
 
 **Entry points** (defined in `pyproject.toml`):
 - `vacuum` — CLI
 - `vacuum-mcp` — MCP server
-- `vacuum-dashboard` — web dashboard (default port 8080; if that port is occupied, use `--port 8181` or any free port)
+- `vacuum-dashboard` — web dashboard (default port 9103; stable service port — both the systemd service and dev.sh use this port)
 
 **Install**: `pip3 install -e .` (system Python, no venv — `python3-venv` not installed)
 
@@ -201,7 +201,7 @@ The FastAPI dashboard (`dashboard.py`) exposes these endpoints:
 Browser (JS fetch)
     │  up to 7 concurrent calls on page load
     ▼
-FastAPI / uvicorn  (dashboard.py, port 8181)
+FastAPI / uvicorn  (dashboard.py, port 9103)
     │  single shared VacuumClient — lives for the server process lifetime
     ▼
 python-roborock DeviceManager
@@ -278,7 +278,7 @@ s.connect(("8.8.8.8", 80))
 lan_ip = s.getsockname()[0]  # → your LAN IP
 ```
 
-**Port 8080 conflict**: If port 8080 is occupied by another process, pass `--port` to use a different port (e.g. `vacuum-dashboard --port 8181`).
+**Port 9103**: The canonical service port. Both the systemd service and `dev.sh` use 9103. Only one can own it at a time — stop the service before running `dev.sh` (`make restart` after dev work to restore the service).
 
 **No `fuser` command**: `fuser` is not installed. Use `pkill -f vacuum-dashboard` to kill dashboard processes, or `ps aux | grep vacuum-dashboard` to find PIDs.
 
@@ -300,8 +300,22 @@ npm run build      # outputs to frontend/dist/
 Then start the dashboard normally:
 
 ```bash
-vacuum-dashboard --port 8181
+vacuum-dashboard --port 9103
 ```
+
+### Service deployment
+
+The dashboard runs as a **systemd user service** on port 9103.
+
+```bash
+make install   # first-time setup: symlinks unit file, enables, starts service
+make deploy    # iterative dev: rebuild frontend + restart service (the standard iteration command)
+make restart   # restart service without rebuilding
+make logs      # follow service logs
+make status    # check service status
+```
+
+The unit file is version-controlled at `deploy/vacuum-dashboard.service`. If the repo is moved, re-run `make install`.
 
 ### Dev workflow (hot-reload)
 
@@ -309,8 +323,10 @@ vacuum-dashboard --port 8181
 ./scripts/dev.sh
 ```
 
-This runs the FastAPI backend on `:8181` and the Vite dev server (default `:5173`) simultaneously.
+This runs the FastAPI backend on `:9103` and the Vite dev server (default `:5173`) simultaneously.
 Vite proxies `/api/*` requests to the backend. Open `http://localhost:5173` for dev.
+
+**Note**: Stop the service first (`systemctl --user stop vacuum-dashboard`) since both use port 9103.
 
 ### Component layout
 

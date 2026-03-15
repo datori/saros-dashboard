@@ -32,11 +32,11 @@ The system SHALL provide a `vacuum-dashboard` CLI entry point that starts a loca
 
 #### Scenario: Default launch
 - **WHEN** `vacuum-dashboard` is run with no arguments
-- **THEN** the server SHALL start on port 8080 and open `http://localhost:8080` in the browser
+- **THEN** the server SHALL start on port 9103 and open `http://localhost:9103` in the browser
 
 #### Scenario: Custom port
-- **WHEN** `vacuum-dashboard --port 9090` is run
-- **THEN** the server SHALL start on port 9090
+- **WHEN** `vacuum-dashboard --port 9999` is run
+- **THEN** the server SHALL start on port 9999
 
 ### Requirement: Live status panel
 The system SHALL display a status panel showing current vacuum state, battery level, dock status, and error code (if any).

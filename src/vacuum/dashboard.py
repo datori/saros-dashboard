@@ -914,7 +914,7 @@ _cli = typer.Typer(name="vacuum-dashboard", add_completion=False)
 
 @_cli.command()
 def _cmd(
-    port: Annotated[int, typer.Option("--port", "-p", help="Port to listen on")] = 8080,
+    port: Annotated[int, typer.Option("--port", "-p", help="Port to listen on")] = 9103,
     no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open browser on start")] = False,
 ) -> None:
     """Launch the vacuum web dashboard."""

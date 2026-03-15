@@ -12,8 +12,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8181',
-      '/manifest.json': 'http://localhost:8181',
+      '/api': 'http://localhost:9103',
+      '/manifest.json': 'http://localhost:9103',
     },
   },
 })

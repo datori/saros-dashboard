@@ -1,0 +1,12 @@
+[Unit]
+Description=Vacuum Dashboard
+After=network.target
+
+[Service]
+ExecStart=/home/openclaw/.local/bin/vacuum-dashboard --port 9103 --no-browser
+WorkingDirectory=/home/openclaw/code/vacuum
+Restart=on-failure
+Environment=PATH=/home/openclaw/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

@@ -85,11 +85,12 @@ vacuum consumables                   # Brush / filter / sensor wear
 ### Web dashboard
 
 ```bash
-vacuum-dashboard                     # Start on default port 8080
-vacuum-dashboard --port 8181         # Use a different port
+vacuum-dashboard                     # Start on default port 9103
+make install                         # Install as a systemd user service (auto-starts on login)
+make deploy                          # Rebuild frontend and restart service (standard iteration command)
 ```
 
-Then open `http://<your-lan-ip>:<port>` in your browser. The dashboard auto-refreshes every 30 seconds and works as an iOS "Add to Home Screen" PWA.
+Then open `http://<your-lan-ip>:9103` in your browser. The dashboard auto-refreshes every 30 seconds and works as an iOS "Add to Home Screen" PWA.
 
 ### MCP server (Claude Desktop)
 
@@ -110,6 +111,140 @@ Add to your `claude_desktop_config.json`:
 ```
 
 Available MCP tools: `vacuum_status`, `start_cleaning`, `stop_cleaning`, `pause_cleaning`, `return_to_dock`, `locate_vacuum`, `get_map`, `room_clean`, `zone_clean`, `run_routine`, `get_cleaning_schedule`, `get_overdue_rooms`, `set_room_interval`, `plan_clean`, `set_room_notes`
+
+---
+
+## Home Assistant integration
+
+The dashboard exposes an HTTP API on port 9103 that Home Assistant can call directly using [`rest_command`](https://www.home-assistant.io/integrations/rest_command/). No authentication is required (LAN-trust model).
+
+### How triggers work
+
+A **trigger** is a named entry you create in the dashboard UI (Triggers panel). Each trigger has a **budget** (minutes) and a **mode** (`vacuum` or `mop`). When fired:
+
+1. A cleaning window opens for the configured number of minutes.
+2. The dispatch loop sends the vacuum to whichever rooms are most overdue during that window.
+3. When the window expires (or `stop` is called), the vacuum docks.
+
+Firing the same trigger while a window is already open **extends** the window rather than resetting it.
+
+---
+
+### `configuration.yaml` — rest_command entries
+
+```yaml
+rest_command:
+  # Fire a named trigger (replace "evening" with your trigger name)
+  vacuum_trigger_evening:
+    url: "http://192.168.1.111:9103/api/trigger/evening/fire"
+    method: POST
+
+  # Stop the current clean and dock immediately
+  vacuum_trigger_stop:
+    url: "http://192.168.1.111:9103/api/trigger/stop"
+    method: POST
+
+  # Open a raw time window without a named trigger (budget_min required)
+  vacuum_window_open:
+    url: "http://192.168.1.111:9103/api/window/open"
+    method: POST
+    content_type: "application/json"
+    payload: '{"budget_min": {{ budget_min }}}'
+```
+
+Replace `192.168.1.111` with your machine's LAN IP (visible at service startup or via `make status`).
+
+---
+
+### Response shapes
+
+**`POST /api/trigger/{name}/fire`** — success:
+```json
+{
+  "ok": true,
+  "window": {
+    "active": true,
+    "remaining_minutes": 45.0
+  }
+}
+```
+
+**`POST /api/trigger/{name}/fire`** — trigger not found (HTTP 404):
+```json
+{ "detail": "Trigger 'evening' not found" }
+```
+
+**`POST /api/trigger/stop`**:
+```json
+{ "ok": true, "window": { "active": false } }
+```
+
+**`GET /api/window`** — poll window state:
+```json
+{
+  "active": true,
+  "remaining_minutes": 32.5,
+  "current_clean": {
+    "event_id": 42,
+    "segment_ids": [3, 5],
+    "mode": "vacuum",
+    "started": true
+  }
+}
+```
+`current_clean` is `null` when no room dispatch is in progress (e.g. window is open but vacuum hasn't started yet, or is between rooms).
+
+---
+
+### Example automation
+
+Fire the "evening" trigger when a person arrives home after 5 pm:
+
+```yaml
+automation:
+  - alias: "Vacuum on arrival (evening)"
+    trigger:
+      - platform: state
+        entity_id: person.you
+        to: "home"
+    condition:
+      - condition: time
+        after: "17:00:00"
+        before: "22:00:00"
+    action:
+      - service: rest_command.vacuum_trigger_evening
+```
+
+Stop the vacuum if someone is cooking (noise sensor, etc.):
+
+```yaml
+automation:
+  - alias: "Stop vacuum when kitchen occupied"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.kitchen_motion
+        to: "on"
+    action:
+      - service: rest_command.vacuum_trigger_stop
+```
+
+---
+
+### Listing available triggers
+
+```bash
+curl http://192.168.1.111:9103/api/triggers
+```
+
+Returns:
+```json
+[
+  { "name": "evening", "budget_min": 45, "mode": "vacuum", "notes": "after dinner" },
+  { "name": "quick",   "budget_min": 20, "mode": "vacuum", "notes": null }
+]
+```
+
+Triggers are created and managed in the **Triggers** panel of the web dashboard.
 
 ---
 
