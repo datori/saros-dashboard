@@ -18,3 +18,7 @@ vacuum_schedule.db-wal
 
 # Editor
 .DS_Store
+
+# Frontend build artifacts
+frontend/dist/
+frontend/node_modules/

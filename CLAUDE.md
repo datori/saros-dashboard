@@ -11,6 +11,14 @@ src/vacuum/
   dashboard.py    # `vacuum-dashboard` FastAPI web dashboard
   client.py       # VacuumClient — all device logic lives here
   config.py       # Credentials + session management
+
+frontend/         # React + Vite + TypeScript + Tailwind CSS + shadcn/ui
+  src/
+    App.tsx                 # Cockpit layout, tab state, 30s refresh
+    components/             # One file per panel + shared UI components
+    lib/api.ts              # apiGet/apiPost/apiPatch helpers
+  dist/                     # Production build output (served by FastAPI)
+  vite.config.ts            # Vite 7 config; proxies /api/* → :8181 in dev
 ```
 
 **Entry points** (defined in `pyproject.toml`):
@@ -275,6 +283,54 @@ lan_ip = s.getsockname()[0]  # → your LAN IP
 **No `fuser` command**: `fuser` is not installed. Use `pkill -f vacuum-dashboard` to kill dashboard processes, or `ps aux | grep vacuum-dashboard` to find PIDs.
 
 **Session base URL caching**: After first auth, the resolved IOT base URL is stored in `.roborock_session.json` under `_base_url`. This skips a `_get_iot_login_info()` round-trip on subsequent connections, noticeably speeding up startup.
+
+## Frontend (React + shadcn/ui)
+
+The dashboard UI is a React SPA built with **Vite 7 + TypeScript + Tailwind CSS v4 + shadcn/ui**.
+FastAPI serves the production build from `frontend/dist/` as static files.
+
+### Build for production
+
+```bash
+cd frontend
+npm install        # first time only
+npm run build      # outputs to frontend/dist/
+```
+
+Then start the dashboard normally:
+
+```bash
+vacuum-dashboard --port 8181
+```
+
+### Dev workflow (hot-reload)
+
+```bash
+./scripts/dev.sh
+```
+
+This runs the FastAPI backend on `:8181` and the Vite dev server (default `:5173`) simultaneously.
+Vite proxies `/api/*` requests to the backend. Open `http://localhost:5173` for dev.
+
+### Component layout
+
+- `App.tsx` — cockpit layout: sticky sidebar (desktop), bottom nav (mobile), 30s refresh loop
+- `components/Panel.tsx` — shared card wrapper
+- One component per panel: `StatusPanel`, `ActionsPanel`, `ConsumablesPanel`, `CleanRoomsPanel`,
+  `CleanSettingsPanel`, `RoutinesPanel`, `SchedulePanel`, `HistoryPanel`, `TriggersPanel`,
+  `WindowPlannerPanel`
+- `lib/api.ts` — `apiGet`/`apiPost`/`apiPatch` with base-relative URLs (works in both dev and prod)
+
+### shadcn components
+
+Components live in `frontend/src/components/ui/` (copy-paste model, not a dependency).
+Add new ones with `npx shadcn@latest add <component>` from the `frontend/` directory.
+
+### Notes
+
+- Uses Vite 7 (not 8) — `@tailwindcss/vite` does not yet support Vite 8
+- Tailwind v4: no `tailwind.config.js`; CSS-based config via `@theme` in `src/index.css`
+- `frontend/dist/` and `frontend/node_modules/` are gitignored
 
 ## Development Environment
 
