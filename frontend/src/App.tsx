@@ -125,9 +125,9 @@ export default function App() {
             <RoutinesPanel refreshKey={refreshKey} />
           </div>
 
-          {/* Triggers — mobile: Plan tab; desktop: Triggers right-tab */}
-          <div className={panelClass(activeTab === 'plan', 'triggers', activeRightTab)}>
-            <TriggersPanel refreshKey={refreshKey} />
+          {/* Schedule — mobile: Plan tab (top); desktop: Info right-tab */}
+          <div className={panelClass(activeTab === 'plan', 'info', activeRightTab)}>
+            <SchedulePanel refreshKey={refreshKey} />
           </div>
 
           {/* Window Planner — mobile: Plan tab; desktop: Triggers right-tab */}
@@ -135,14 +135,14 @@ export default function App() {
             <WindowPlannerPanel />
           </div>
 
+          {/* Triggers — mobile: Plan tab; desktop: Triggers right-tab */}
+          <div className={panelClass(activeTab === 'plan', 'triggers', activeRightTab)}>
+            <TriggersPanel refreshKey={refreshKey} />
+          </div>
+
           {/* Clean Settings — mobile: Info tab; desktop: Info right-tab */}
           <div className={panelClass(activeTab === 'info', 'info', activeRightTab)}>
             <CleanSettingsPanel refreshKey={refreshKey} />
-          </div>
-
-          {/* Schedule — mobile: Info tab; desktop: Info right-tab */}
-          <div className={panelClass(activeTab === 'info', 'info', activeRightTab)}>
-            <SchedulePanel refreshKey={refreshKey} />
           </div>
 
           {/* History — mobile: Info tab; desktop: Info right-tab */}
