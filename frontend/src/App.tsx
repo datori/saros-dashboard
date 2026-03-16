@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Home, Sparkles, CalendarDays, BarChart2 } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import StatusPanel from '@/components/StatusPanel'
 import ActionsPanel from '@/components/ActionsPanel'
@@ -167,17 +168,17 @@ export default function App() {
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
         {([
-          { id: 'now' as const,   icon: '🏠', label: 'Now'   },
-          { id: 'clean' as const, icon: '🧹', label: 'Clean' },
-          { id: 'plan' as const,  icon: '📅', label: 'Plan'  },
-          { id: 'info' as const,  icon: '📊', label: 'Info'  },
-        ]).map(t => (
+          { id: 'now' as const,   icon: Home,         label: 'Now'   },
+          { id: 'clean' as const, icon: Sparkles,     label: 'Clean' },
+          { id: 'plan' as const,  icon: CalendarDays, label: 'Plan'  },
+          { id: 'info' as const,  icon: BarChart2,    label: 'Info'  },
+        ] as { id: MobileTab; icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; label: string }[]).map(t => (
           <button
             key={t.id}
             onClick={() => handleTabChange(t.id)}
             className={`flex flex-col items-center gap-0.5 flex-1 bg-transparent border-0 cursor-pointer text-[10px] py-2 transition-colors ${activeTab === t.id ? 'text-primary' : 'text-muted-foreground'}`}
           >
-            <span className="text-xl leading-none">{t.icon}</span>
+            <t.icon size={20} strokeWidth={1.75} />
             {t.label}
           </button>
         ))}
