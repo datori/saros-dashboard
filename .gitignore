@@ -22,3 +22,7 @@ vacuum_schedule.db-wal
 # Frontend build artifacts
 frontend/dist/
 frontend/node_modules/
+
+# Screenshot tooling
+node_modules/
+docs/screenshots/_raw_*.png

@@ -2,6 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Vacuum Dashboard](docs/screenshots/desktop.png)
+
 CLI, MCP server, and web dashboard for the **Roborock Saros 10R** robot vacuum, built on top of [`python-roborock`](https://github.com/Python-roborock/python-roborock). Control cleaning, monitor status, manage schedules, and query history — all from the terminal, your browser, or an AI assistant.
 
 > **Cloud API only.** The Saros 10R uses a newer local protocol not yet supported by `python-roborock`. All commands are relayed through Roborock's cloud MQTT broker (`usiot.roborock.com:8883`), even when the device is on the same LAN. See [Connectivity](#connectivity) for details.
@@ -16,6 +18,10 @@ CLI, MCP server, and web dashboard for the **Roborock Saros 10R** robot vacuum, 
 - **Scheduling** — SQLite-backed per-room cleaning intervals with overdue detection and priority scoring
 - **Clean history** — paginated history with duration, area, and completion status
 - **Consumables** — percentage-remaining gauges for main brush, side brush, filter, and sensor
+
+| Schedule (Gantt) | Mobile |
+|---|---|
+| ![Schedule](docs/screenshots/schedule.png) | ![Mobile](docs/screenshots/mobile.png) |
 
 ---
 

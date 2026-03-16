@@ -1,0 +1,12 @@
+{
+  "name": "vacuum-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.50.0",
+    "serve": "^14.0.0"
+  }
+}

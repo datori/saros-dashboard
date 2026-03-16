@@ -1,4 +1,4 @@
-.PHONY: deploy restart logs status install
+.PHONY: deploy restart logs status install screenshots
 
 deploy:
 	cd frontend && npm run build
@@ -15,3 +15,6 @@ status:
 
 install:
 	scripts/install-service.sh
+
+screenshots:
+	node scripts/screenshots.mjs
