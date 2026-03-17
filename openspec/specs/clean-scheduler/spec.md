@@ -83,3 +83,23 @@ The system SHALL provide a full schedule status view for all configured rooms.
 #### Scenario: Rooms without schedule
 - **WHEN** `get_schedule()` is called and some rooms have NULL intervals
 - **THEN** those rooms SHALL be included with NULL ratio fields and clearly marked as unscheduled
+
+### Requirement: Combined-mode credit for mop dispatches with fan speed
+When the mop dispatch settings include a non-OFF fan speed, the robot physically vacuums and mops simultaneously. The system SHALL log such dispatches as `mode='both'` so that vacuum overdue ratios are also reset.
+
+#### Scenario: Mop dispatch with fan speed credits vacuum
+- **WHEN** a scheduled mop clean is dispatched via the auto-window
+- **AND** the `mop` dispatch settings have `fan_speed` set to a non-OFF value
+- **THEN** the clean event SHALL be logged with `mode='both'`
+- **AND** `_get_last_cleaned(segment_id, 'vacuum')` SHALL return this event's timestamp
+
+#### Scenario: Mop dispatch without fan speed credits only mop
+- **WHEN** a scheduled mop clean is dispatched via the auto-window
+- **AND** the `mop` dispatch settings have `fan_speed = 'off'` or no fan speed set
+- **THEN** the clean event SHALL be logged with `mode='mop'`
+- **AND** `_get_last_cleaned(segment_id, 'vacuum')` SHALL NOT return this event
+
+#### Scenario: mode='both' satisfies both overdue queries
+- **WHEN** a clean event exists with `mode='both'` and `complete=1`
+- **THEN** `_get_last_cleaned(segment_id, 'vacuum')` SHALL return its timestamp
+- **AND** `_get_last_cleaned(segment_id, 'mop')` SHALL return its timestamp

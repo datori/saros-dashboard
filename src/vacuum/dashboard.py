@@ -271,12 +271,19 @@ async def _check_dispatch(status: dict) -> None:
         ds = await scheduler.get_dispatch_settings()
         dkwargs = _parse_dispatch_settings(ds.get(target_mode, {}))
         await client.clean_rooms(segment_ids, **dkwargs)
-        event_id = await scheduler.log_clean(segment_ids, target_mode, source="auto-window")
+        # If mop dispatch settings include a non-OFF fan speed, the robot physically
+        # vacuums too — credit both modes so the vacuum schedule isn't falsely overdue.
+        if target_mode == "mop":
+            fs = (ds.get("mop", {}).get("fan_speed") or "").lower()
+            log_mode = "both" if fs and fs != "off" else "mop"
+        else:
+            log_mode = target_mode
+        event_id = await scheduler.log_clean(segment_ids, log_mode, source="auto-window")
         _active_clean = ActiveClean(
             event_id=event_id,
             segment_ids=segment_ids,
             dispatched_at=time.monotonic(),
-            mode=target_mode,
+            mode=log_mode,
         )
         _cache_invalidate("status")
     except Exception as e:
