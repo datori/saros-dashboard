@@ -87,6 +87,10 @@ The panel SHALL render a solid dot at the position of the most recent confirmed 
 - **WHEN** `last_vacuumed` is before the window start
 - **THEN** no confirmed dot is rendered; inferred dots may still appear if they fall within the window
 
+#### Scenario: Combined-run dot on VAC track
+- **WHEN** `last_vacuum_combined` is true (vacuum credit came from a mode='both' run)
+- **THEN** the VAC track's confirmed dot SHALL render in sky-blue (`#38bdf8`) instead of white, signaling the credit came from a simultaneous vac + mop run rather than a dedicated vacuum pass
+
 ---
 
 ### Requirement: Due date diamond marker
@@ -134,6 +138,10 @@ Track elements SHALL show tooltips on hover revealing exact dates: confirmed dot
 #### Scenario: Confirmed dot tooltip
 - **WHEN** user hovers over the confirmed clean dot
 - **THEN** a tooltip shows the exact clean datetime
+
+#### Scenario: Combined-run dot tooltip
+- **WHEN** user hovers over a sky-blue combined-run dot on the VAC track
+- **THEN** the tooltip SHALL read "Cleaned [datetime] (combined vac + mop run)"
 
 #### Scenario: Overdue band tooltip
 - **WHEN** user hovers over the red overdue band
