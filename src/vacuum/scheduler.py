@@ -440,6 +440,7 @@ class RoomSchedule:
     mop_days: float | None
     last_vacuumed: str | None
     last_mopped: str | None
+    last_vacuum_combined: bool  # True when last_vacuumed credit came from a mode='both' event
     vacuum_overdue_ratio: float | None  # None = no interval; float('inf') = never cleaned
     mop_overdue_ratio: float | None
     notes: str | None
@@ -460,6 +461,7 @@ class RoomSchedule:
             "mop_days": self.mop_days,
             "last_vacuumed": self.last_vacuumed,
             "last_mopped": self.last_mopped,
+            "last_vacuum_combined": self.last_vacuum_combined,
             "vacuum_overdue_ratio": _ratio(self.vacuum_overdue_ratio),
             "mop_overdue_ratio": _ratio(self.mop_overdue_ratio),
             "notes": self.notes,
@@ -485,11 +487,15 @@ def _compute_overdue_ratio(
 
 def _get_last_cleaned(
     conn: sqlite3.Connection, segment_id: int, mode: str
-) -> str | None:
-    """Get most recent dispatched_at for a completed clean in the given mode."""
+) -> tuple[str | None, bool]:
+    """Return (dispatched_at, is_combined) for the most recent completed clean in mode.
+
+    is_combined is True when the matching event has mode='both' (i.e. the vacuum
+    credit came from a simultaneous mop+vac run, not a dedicated vacuum pass).
+    """
     row = conn.execute(
         """
-        SELECT e.dispatched_at
+        SELECT e.dispatched_at, e.mode
         FROM clean_events e
         JOIN clean_event_rooms cer ON cer.clean_event_id = e.id
         WHERE cer.segment_id = ?
@@ -500,7 +506,9 @@ def _get_last_cleaned(
         """,
         (segment_id, mode),
     ).fetchone()
-    return row[0] if row else None
+    if row is None:
+        return None, False
+    return row[0], row[1] == "both"
 
 
 def _get_schedule_sync() -> list[RoomSchedule]:
@@ -511,8 +519,8 @@ def _get_schedule_sync() -> list[RoomSchedule]:
         result = []
         for row in rows:
             sid = row["segment_id"]
-            last_vacuumed = _get_last_cleaned(conn, sid, "vacuum")
-            last_mopped = _get_last_cleaned(conn, sid, "mop")
+            last_vacuumed, vacuum_combined = _get_last_cleaned(conn, sid, "vacuum")
+            last_mopped, _ = _get_last_cleaned(conn, sid, "mop")
             vacuum_ratio = _compute_overdue_ratio(last_vacuumed, row["vacuum_days"])
             mop_ratio = _compute_overdue_ratio(last_mopped, row["mop_days"])
             result.append(
@@ -523,6 +531,7 @@ def _get_schedule_sync() -> list[RoomSchedule]:
                     mop_days=row["mop_days"],
                     last_vacuumed=last_vacuumed,
                     last_mopped=last_mopped,
+                    last_vacuum_combined=vacuum_combined,
                     vacuum_overdue_ratio=vacuum_ratio,
                     mop_overdue_ratio=mop_ratio,
                     notes=row["notes"],

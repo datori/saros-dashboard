@@ -11,6 +11,7 @@ interface RoomSchedule {
   name: string
   last_vacuumed: string | null
   last_mopped: string | null
+  last_vacuum_combined: boolean
   vacuum_days: number | null
   mop_days: number | null
   vacuum_overdue_ratio: number | null
@@ -41,6 +42,8 @@ const NOW_COLOR         = 'rgba(255,255,255,0.92)'
 const NOW_GLOW          = '0 0 6px rgba(255,255,255,0.3)'
 const DOT_COLOR         = '#ffffff'
 const DOT_GLOW          = '0 0 5px rgba(255,255,255,0.5)'
+const DOT_COMBINED      = '#38bdf8'              // sky-400 — vacuum credit from combined run
+const DOT_COMBINED_GLOW = '0 0 5px rgba(56,189,248,0.7)'
 const DOT_INFERRED      = 'rgba(255,255,255,0.18)'
 const DIAMOND_FRESH     = '#38bdf8'             // sky-400 — matches gradient start
 const DIAMOND_SOON      = '#818cf8'             // indigo-400 — matches gradient mid
@@ -154,6 +157,10 @@ function GanttLegend() {
         last cleaned
       </span>
       <span className="flex items-center gap-1.5">
+        <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: DOT_COMBINED, boxShadow: DOT_COMBINED_GLOW }} />
+        combined run
+      </span>
+      <span className="flex items-center gap-1.5">
         <span className="inline-block w-2 h-2 rotate-45 rounded-sm" style={{ backgroundColor: DIAMOND_FRESH, boxShadow: DIAMOND_GLOW_FRESH }} />
         due date
       </span>
@@ -168,13 +175,14 @@ function GanttLegend() {
 // ─── Track Component ──────────────────────────────────────────────────────────
 
 function Track({
-  last, intervalDays, ratio, win, isMobile,
+  last, intervalDays, ratio, win, isMobile, combined,
 }: {
   last: string | null
   intervalDays: number | null
   ratio: number | null
   win: GanttWindow
   isMobile: boolean
+  combined?: boolean
 }) {
   const { windowStart, windowEnd, windowDurationMs, nowPct } = win
   const trackH = isMobile ? 14 : 18  // px
@@ -314,18 +322,20 @@ function Track({
         />
       ))}
 
-      {/* Confirmed clean dot — bright white + outer ring to distinguish from inferred */}
+      {/* Confirmed clean dot — white normally; sky-blue when credit came from a combined run */}
       {lastDate && lastPct !== null && lastPct >= -1 && lastPct <= 101 && (
         <div
-          title={`Cleaned ${lastDate.toLocaleString()}`}
+          title={combined
+            ? `Cleaned ${lastDate.toLocaleString()} (combined vac + mop run)`
+            : `Cleaned ${lastDate.toLocaleString()}`}
           style={{
             position: 'absolute',
             width: dotR * 2 + 2, height: dotR * 2 + 2,
             left: `${Math.max(0, Math.min(100, lastPct))}%`,
             top: '50%',
             transform: `translateX(-${dotR + 1}px) translateY(-${dotR + 1}px)`,
-            backgroundColor: DOT_COLOR,
-            boxShadow: DOT_GLOW,
+            backgroundColor: combined ? DOT_COMBINED : DOT_COLOR,
+            boxShadow: combined ? DOT_COMBINED_GLOW : DOT_GLOW,
             outline: '2px solid rgba(255,255,255,0.18)',
             outlineOffset: 3,
             borderRadius: '50%',
@@ -459,8 +469,6 @@ function RoomTrackGroup({
   onEdit: (r: RoomState) => void
   onCleanNow: (segmentId: number) => void
 }) {
-  const displayName = isMobile && room.name.length > 10 ? room.name.slice(0, 9) + '…' : room.name
-
   return (
     <div
       className="border-t border-border/40 pt-1.5 pb-1 rounded-r-lg hover:bg-white/[0.025] transition-colors -mx-2 px-2"
@@ -470,7 +478,7 @@ function RoomTrackGroup({
       <div className="flex items-center gap-1.5 mb-1">
         <UrgencyDot room={room} />
         <span className={`font-medium ${isMobile ? 'text-[11px]' : 'text-xs'} flex-1 min-w-0 truncate`}>
-          {displayName}
+          {room.name}
         </span>
         {!isMobile && (
           <Button variant="outline" size="sm" className="h-5 px-1.5 text-[10px] shrink-0" onClick={() => onEdit(room)}>
@@ -503,6 +511,7 @@ function RoomTrackGroup({
                 ratio={type === 'VAC' ? room.vacuum_overdue_ratio : room.mop_overdue_ratio}
                 win={win}
                 isMobile={isMobile}
+                combined={type === 'VAC' ? room.last_vacuum_combined : false}
               />
             </div>
           </div>
