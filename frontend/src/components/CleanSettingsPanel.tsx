@@ -56,13 +56,23 @@ export default function CleanSettingsPanel({ refreshKey }: { refreshKey: number 
   }
 
   return (
-    <Panel title="Clean Settings" stale={stale}>
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <SettingSelect id="set-fan-speed"  label="Fan Speed"  options={FAN_SPEEDS}  value={fanSpeed}  onChange={setFanSpeed} />
-        <SettingSelect id="set-mop-mode"   label="Mop Mode"   options={MOP_MODES}   value={mopMode}   onChange={setMopMode} />
-        <SettingSelect id="set-water-flow" label="Water Flow" options={WATER_FLOWS} value={waterFlow} onChange={setWaterFlow} />
+    <Panel title="Schedule Defaults" stale={stale}>
+      <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+        <div className="mb-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Default Clean Settings</div>
+          <p className="mt-1 text-sm text-slate-300">These defaults apply when scheduled or automated cleans run without an override.</p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 mb-4">
+          <SettingSelect id="set-fan-speed"  label="Fan Speed"  options={FAN_SPEEDS}  value={fanSpeed}  onChange={setFanSpeed} />
+          <SettingSelect id="set-mop-mode"   label="Mop Mode"   options={MOP_MODES}   value={mopMode}   onChange={setMopMode} />
+          <div className="sm:max-w-[240px]">
+            <SettingSelect id="set-water-flow" label="Water Flow" options={WATER_FLOWS} value={waterFlow} onChange={setWaterFlow} />
+          </div>
+        </div>
+
+        <Button onClick={saveSettings} className="rounded-xl px-4">Save Defaults</Button>
       </div>
-      <Button onClick={saveSettings}>Save Settings</Button>
       {feedback && (
         <p className={`text-xs mt-2 ${feedback.ok ? 'text-green-400' : 'text-destructive'}`}>{feedback.msg}</p>
       )}

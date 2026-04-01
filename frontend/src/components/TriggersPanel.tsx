@@ -81,91 +81,112 @@ export default function TriggersPanel({ refreshKey }: { refreshKey: number }) {
 
   return (
     <Panel title="Auto-Clean Triggers">
-      {/* Fire buttons */}
-      <div className="flex flex-wrap gap-2 mb-3">
-        {triggers.map(t => (
-          <button
-            key={t.name}
-            onClick={() => fireTrigger(t.name)}
-            className="px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer transition-colors"
-            style={{ background: '#1e3a5e', color: '#4f8ef7', border: '1px solid #4f8ef7' }}
-          >
-            {t.name} ({t.budget_min}m)
-          </button>
-        ))}
-        {triggers.length > 0 && (
-          <button
-            onClick={stopWindow}
-            className="px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer"
-            style={{ background: '#3d1515', color: '#ef4444', border: '1px solid #ef4444' }}
-          >
-            Stop
-          </button>
-        )}
-      </div>
-
-      {/* Window status */}
-      {windowStatus && (
-        <div
-          className="rounded-lg px-3 py-2 text-sm mb-3"
-          style={windowStatus.active
-            ? { background: '#1e3a2a', border: '1px solid #22c55e', color: '#22c55e' }
-            : { background: 'var(--color-border)', color: 'var(--color-muted-foreground)' }
-          }
-        >
-          {windowStatus.active
-            ? `Window active — ${windowStatus.remaining_minutes} min remaining${windowStatus.current_clean ? ` · Cleaning ${windowStatus.current_clean.segment_ids.length} room(s)` : ''}`
-            : 'No active window'
-          }
-        </div>
-      )}
-
-      {feedback && (
-        <p className={`text-xs mb-3 ${feedback.ok ? 'text-green-400' : 'text-destructive'}`}>{feedback.msg}</p>
-      )}
-
-      {/* Manage triggers */}
-      <div className="border-t border-border pt-3 mt-1">
-        <div className="flex justify-between items-center mb-2">
-          <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Manage Triggers</span>
-          <Button size="sm" className="h-7 px-2 text-xs" onClick={() => { setEditingTrigger(null); setModalOpen(true) }}>+ Add</Button>
-        </div>
-        {triggers.map(t => (
-          <div key={t.name} className="flex justify-between items-center py-1.5 border-b border-border last:border-0">
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <p className="font-medium text-sm">{t.name}</p>
-              <p className="text-[11px] text-muted-foreground">{t.budget_min}min · {t.mode}{t.notes ? ' · ' + t.notes : ''}</p>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Quick Fire</div>
+              <p className="mt-1 text-sm text-slate-300">Open a cleaning window from a saved trigger.</p>
             </div>
-            <div className="flex gap-1">
-              <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={() => { setEditingTrigger(t); setModalOpen(true) }}>Edit</Button>
-              <Button variant="destructive" size="sm" className="h-7 px-2 text-xs" onClick={() => deleteTrigger(t.name)}>Del</Button>
-            </div>
+            {triggers.length > 0 && (
+              <Button variant="destructive" size="sm" className="h-8 rounded-xl px-3 text-xs" onClick={stopWindow}>
+                Stop Window
+              </Button>
+            )}
           </div>
-        ))}
-        {triggers.length === 0 && <p className="text-muted-foreground italic text-sm">No triggers configured yet.</p>}
-      </div>
 
-      {/* Dispatch settings */}
-      <div className="border-t border-border pt-3 mt-3">
-        <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Dispatch Settings</span>
-        {(['vacuum', 'mop'] as const).map(m => {
-          const s = dispatchSettings[m] ?? {}
-          return (
-            <div key={m} className="mt-2">
-              <p className="text-xs font-semibold capitalize mb-1">{m}</p>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                <span className="text-muted-foreground self-center">Fan speed</span>
-                <DispatchSelect mode={m} field="fan_speed" value={s.fan_speed ?? null} options={FAN_SPEEDS} />
-                <span className="text-muted-foreground self-center">Mop mode</span>
-                <DispatchSelect mode={m} field="mop_mode" value={s.mop_mode ?? null} options={MOP_MODES} />
-                <span className="text-muted-foreground self-center">Water flow</span>
-                <DispatchSelect mode={m} field="water_flow" value={s.water_flow ?? null} options={WATER_FLOWS} />
-                <span className="text-muted-foreground self-center">Route</span>
-                <DispatchSelect mode={m} field="route" value={s.route ?? null} options={ROUTES} />
-              </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {triggers.map(t => (
+              <button
+                key={t.name}
+                onClick={() => fireTrigger(t.name)}
+                className="flex min-w-0 items-center justify-between rounded-xl border border-sky-400/20 bg-sky-500/10 px-3 py-2 text-left transition hover:bg-sky-500/14"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-slate-100">{t.name}</span>
+                  <span className="text-[11px] text-sky-200/85">{t.budget_min} min window</span>
+                </span>
+                <span className="rounded-full border border-sky-400/20 bg-slate-950/35 px-2 py-0.5 text-[10px] text-sky-100">
+                  Fire
+                </span>
+              </button>
+            ))}
+            {triggers.length === 0 && <p className="text-sm italic text-muted-foreground">No triggers configured yet.</p>}
+          </div>
+
+          {windowStatus && (
+            <div
+              className="mt-3 rounded-xl px-3 py-2 text-sm"
+              style={windowStatus.active
+                ? { background: '#1e3a2a', border: '1px solid #22c55e', color: '#86efac' }
+                : { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'var(--color-muted-foreground)' }
+              }
+            >
+              {windowStatus.active
+                ? `Window active · ${windowStatus.remaining_minutes} min remaining${windowStatus.current_clean ? ` · Cleaning ${windowStatus.current_clean.segment_ids.length} room(s)` : ''}`
+                : 'No active window'}
             </div>
-          )
-        })}
+          )}
+
+          {feedback && (
+            <p className={`mt-2 text-xs ${feedback.ok ? 'text-green-400' : 'text-destructive'}`}>{feedback.msg}</p>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Manage Triggers</div>
+            <Button size="sm" className="h-8 rounded-xl px-3 text-xs" onClick={() => { setEditingTrigger(null); setModalOpen(true) }}>Add Trigger</Button>
+          </div>
+
+          <div className="space-y-2">
+            {triggers.map(t => (
+              <div key={t.name} className="flex items-start justify-between gap-3 rounded-xl border border-white/8 bg-slate-950/35 px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-slate-100">{t.name}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t.budget_min} min · {t.mode}{t.notes ? ` · ${t.notes}` : ''}</p>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <Button variant="outline" size="sm" className="h-7 rounded-lg px-2 text-xs" onClick={() => { setEditingTrigger(t); setModalOpen(true) }}>Edit</Button>
+                  <Button variant="destructive" size="sm" className="h-7 rounded-lg px-2 text-xs" onClick={() => deleteTrigger(t.name)}>Del</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-3">
+          <div className="mb-3">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Dispatch Defaults</div>
+            <p className="mt-1 text-sm text-slate-300">Default settings applied when triggers fire vacuum or mop dispatches.</p>
+          </div>
+          {(['vacuum', 'mop'] as const).map(m => {
+            const s = dispatchSettings[m] ?? {}
+            return (
+              <div key={m} className="mt-3 rounded-xl border border-white/8 bg-slate-950/35 p-3 first:mt-0">
+                <p className="mb-2 text-xs font-semibold capitalize text-slate-100">{m}</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Fan speed</span>
+                    <DispatchSelect mode={m} field="fan_speed" value={s.fan_speed ?? null} options={FAN_SPEEDS} />
+                  </div>
+                  <div>
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Mop mode</span>
+                    <DispatchSelect mode={m} field="mop_mode" value={s.mop_mode ?? null} options={MOP_MODES} />
+                  </div>
+                  <div>
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Water flow</span>
+                    <DispatchSelect mode={m} field="water_flow" value={s.water_flow ?? null} options={WATER_FLOWS} />
+                  </div>
+                  <div>
+                    <span className="mb-1 block text-[11px] text-muted-foreground">Route</span>
+                    <DispatchSelect mode={m} field="route" value={s.route ?? null} options={ROUTES} />
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       <TriggerModal

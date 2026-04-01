@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Home, Sparkles, CalendarDays, BarChart2 } from 'lucide-react'
+import { useState, useEffect, useCallback, type ComponentType } from 'react'
+import { Sparkles, CalendarDays, BarChart2, Orbit, TimerReset, RadioTower } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import StatusPanel from '@/components/StatusPanel'
-import ActionsPanel from '@/components/ActionsPanel'
+import StatusBar from '@/components/StatusBar'
 import ConsumablesPanel from '@/components/ConsumablesPanel'
 import CleanRoomsPanel from '@/components/CleanRoomsPanel'
 import RoutinesPanel from '@/components/RoutinesPanel'
@@ -13,25 +12,31 @@ import SchedulePanel from '@/components/SchedulePanel'
 import HistoryPanel from '@/components/HistoryPanel'
 import ConnectivityBanner from '@/components/ConnectivityBanner'
 
-type MobileTab = 'now' | 'clean' | 'plan' | 'info'
-type RightTab = 'rooms' | 'routines' | 'triggers' | 'info'
+type MobileTab = 'schedule' | 'clean' | 'history'
+type RightTab = 'clean' | 'triggers' | 'history'
 
-function getStoredTab<T extends string>(key: string, fallback: T): T {
-  return (sessionStorage.getItem(key) as T) || fallback
+const VALID_MOBILE_TABS: MobileTab[] = ['schedule', 'clean', 'history']
+const VALID_RIGHT_TABS: RightTab[] = ['clean', 'triggers', 'history']
+
+function getStoredMobileTab(): MobileTab {
+  const stored = sessionStorage.getItem('activeTab') as MobileTab | null
+  return stored && VALID_MOBILE_TABS.includes(stored) ? stored : 'schedule'
 }
 
-// Panel visibility on desktop: right-tab controls which panel shows
-// Panel visibility on mobile: activeTab controls which panels show
-function panelClass(mobileVisible: boolean, rightTab: RightTab, activeRightTab: RightTab): string {
-  const mobileClass = mobileVisible ? '' : 'hidden md:block'
-  const desktopClass = activeRightTab === rightTab ? '' : 'md:hidden'
-  return [mobileClass, desktopClass].filter(Boolean).join(' ')
+function getStoredRightTab(): RightTab {
+  const stored = sessionStorage.getItem('activeRightTab') as RightTab | null
+  return stored && VALID_RIGHT_TABS.includes(stored) ? stored : 'clean'
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<MobileTab>(() => getStoredTab('activeTab', 'now'))
-  const [activeRightTab, setActiveRightTab] = useState<RightTab>(() => getStoredTab('activeRightTab', 'rooms'))
+  const [activeTab, setActiveTab] = useState<MobileTab>(getStoredMobileTab)
+  const [activeRightTab, setActiveRightTab] = useState<RightTab>(getStoredRightTab)
   const [refreshKey, setRefreshKey] = useState(0)
+  const mobileTabs: { id: MobileTab; icon: ComponentType<{ size?: number; strokeWidth?: number }>; label: string }[] = [
+    { id: 'schedule', icon: CalendarDays, label: 'Schedule' },
+    { id: 'clean', icon: Sparkles, label: 'Clean' },
+    { id: 'history', icon: BarChart2, label: 'History' },
+  ]
 
   const handleTabChange = (tab: MobileTab) => {
     setActiveTab(tab)
@@ -54,132 +59,163 @@ export default function App() {
     <div
       className="min-h-svh"
       style={{
-        padding: 'max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left))',
-        paddingBottom: 'calc(max(20px, env(safe-area-inset-bottom)) + 56px)',
+        padding: 'max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left))',
+        paddingBottom: 'calc(max(28px, env(safe-area-inset-bottom)) + 72px)',
       }}
     >
-      <div className="max-w-[1400px] mx-auto">
-
-      {/* Header */}
-      <header className="flex items-center gap-3 mb-6">
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-          <circle cx="14" cy="14" r="13" stroke="#4f8ef7" strokeWidth="2"/>
-          <circle cx="14" cy="14" r="6" fill="#4f8ef7" opacity="0.3"/>
-          <circle cx="14" cy="14" r="2" fill="#4f8ef7"/>
-          <circle cx="14" cy="4"  r="1.5" fill="#4f8ef7"/>
-          <circle cx="14" cy="24" r="1.5" fill="#4f8ef7"/>
-          <circle cx="4"  cy="14" r="1.5" fill="#4f8ef7"/>
-          <circle cx="24" cy="14" r="1.5" fill="#4f8ef7"/>
-        </svg>
-        <h1 className="text-lg font-semibold">Vacuum Dashboard</h1>
-        <span className="ml-auto text-xs text-muted-foreground">
-          Auto-refreshes every 30s{' '}
-          <button
-            onClick={refresh}
-            className="text-primary hover:underline bg-transparent border-0 cursor-pointer p-0 text-xs"
-          >
-            Refresh now
-          </button>
-        </span>
-      </header>
-
-      <ConnectivityBanner refreshKey={refreshKey} />
-
-      {/* Cockpit */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-start">
-
-        {/* Sidebar */}
-        <div className="contents md:flex md:flex-col md:gap-4 md:w-[360px] md:shrink-0 md:sticky md:top-5 md:max-h-[calc(100vh-40px)] md:overflow-y-auto">
-          <div className={activeTab === 'now' ? '' : 'hidden md:block'}>
-            <StatusPanel refreshKey={refreshKey} />
+      <div className="mx-auto max-w-[1480px]">
+        <header className="mb-3 md:hidden">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-sky-300/20 bg-sky-400/10 text-sky-200 shadow-[0_10px_28px_rgba(59,130,246,0.14)]">
+              <Orbit size={16} strokeWidth={1.8} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.24em] text-sky-200/70">Vacuum Control Center</p>
+              <h1 className="text-base font-semibold tracking-tight text-white">Schedule, clean, and recover faster.</h1>
+            </div>
           </div>
-          <div className={activeTab === 'now' ? '' : 'hidden md:block'}>
-            <ActionsPanel onStatusChange={refresh} />
+        </header>
+
+        <header className="mb-3 hidden rounded-[1.45rem] border border-white/10 bg-[linear-gradient(135deg,rgba(17,39,66,0.95),rgba(10,20,34,0.82))] px-4 py-3.5 shadow-[0_24px_64px_rgba(3,8,20,0.32)] backdrop-blur-xl md:block">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 max-w-2xl">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-sky-300/20 bg-sky-400/10 text-sky-200 shadow-[0_10px_28px_rgba(59,130,246,0.14)]">
+                  <Orbit size={18} strokeWidth={1.8} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[9px] font-semibold uppercase tracking-[0.24em] text-sky-200/70">Vacuum Control Center</p>
+                  <h1 className="text-lg font-semibold tracking-tight text-white lg:text-xl">Schedule, clean, and recover faster.</h1>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid min-w-0 grid-cols-3 gap-2 lg:w-[500px] lg:max-w-[500px]">
+              <div className="min-w-0 rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+                <div className="mb-0.5 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.18em] text-slate-400">
+                  <TimerReset size={14} />
+                  Refresh
+                </div>
+                <div className="text-sm text-slate-200">30 sec</div>
+              </div>
+              <div className="min-w-0 rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+                <div className="mb-0.5 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.18em] text-slate-400">
+                  <CalendarDays size={14} />
+                  Focus
+                </div>
+                <div className="text-sm text-slate-200">Schedule</div>
+              </div>
+              <div className="min-w-0 rounded-2xl border border-primary/30 bg-primary/10 px-3 py-2">
+                <div className="mb-0.5 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.18em] text-sky-200/80">
+                  <RadioTower size={14} />
+                  Action
+                </div>
+                <button
+                  onClick={refresh}
+                  className="cursor-pointer border-0 bg-transparent p-0 text-left text-sm font-medium text-white transition hover:text-sky-200"
+                >
+                  Refresh now
+                </button>
+              </div>
+            </div>
           </div>
-          <div className={activeTab === 'info' ? '' : 'hidden md:block'}>
-            <ConsumablesPanel refreshKey={refreshKey} />
-          </div>
-        </div>
+        </header>
 
-        {/* Right pane */}
-        <div className="contents md:flex md:flex-col md:gap-4 md:flex-1 md:min-w-0 md:max-w-2xl">
+        <ConnectivityBanner refreshKey={refreshKey} />
 
-          {/* Desktop right-pane tab bar */}
-          <Tabs
-            value={activeRightTab}
-            onValueChange={(v) => handleRightTabChange(v as RightTab)}
-            className="hidden md:block"
-          >
-            <TabsList className="w-full justify-start bg-card border border-border h-auto p-1.5">
-              <TabsTrigger value="rooms">Rooms</TabsTrigger>
-              <TabsTrigger value="routines">Routines</TabsTrigger>
-              <TabsTrigger value="triggers">Triggers</TabsTrigger>
-              <TabsTrigger value="info">Info</TabsTrigger>
-            </TabsList>
-          </Tabs>
+        <StatusBar refreshKey={refreshKey} onStatusChange={refresh} />
 
-          {/* Rooms — mobile: Clean tab; desktop: Rooms right-tab */}
-          <div className={panelClass(activeTab === 'clean', 'rooms', activeRightTab)}>
-            <CleanRoomsPanel refreshKey={refreshKey} />
-          </div>
-
-          {/* Routines — mobile: Clean tab; desktop: Routines right-tab */}
-          <div className={panelClass(activeTab === 'clean', 'routines', activeRightTab)}>
-            <RoutinesPanel refreshKey={refreshKey} />
-          </div>
-
-          {/* Schedule — mobile: Now tab (first); tablet: Info right-tab; desktop(lg+): column 3 */}
-          <div className={`${panelClass(activeTab === 'now', 'info', activeRightTab)} order-first md:order-none lg:hidden`}>
+        <div className="hidden items-start gap-6 md:flex">
+          <div className="min-w-0 flex-1">
             <SchedulePanel refreshKey={refreshKey} />
           </div>
 
-          {/* Window Planner — mobile: Plan tab; desktop: Triggers right-tab */}
-          <div className={panelClass(activeTab === 'plan', 'triggers', activeRightTab)}>
-            <WindowPlannerPanel />
-          </div>
+          <div className="sticky top-5 flex max-h-[calc(100vh-72px)] w-[360px] shrink-0 flex-col gap-4 overflow-y-auto xl:w-[370px]">
+            <Tabs
+              value={activeRightTab}
+              onValueChange={(v) => handleRightTabChange(v as RightTab)}
+            >
+              <TabsList className="grid h-auto w-full grid-cols-3 overflow-hidden rounded-[1.1rem] border border-white/10 bg-slate-950/40 p-1 backdrop-blur">
+                <TabsTrigger value="clean" className="min-w-0 rounded-[0.8rem] px-1.5 py-2 text-[10px] font-medium text-slate-300 data-[state=active]:bg-white data-[state=active]:text-slate-950">
+                  Clean
+                </TabsTrigger>
+                <TabsTrigger value="triggers" className="min-w-0 rounded-[0.8rem] px-1.5 py-2 text-[10px] font-medium text-slate-300 data-[state=active]:bg-white data-[state=active]:text-slate-950">
+                  Triggers
+                </TabsTrigger>
+                <TabsTrigger value="history" className="min-w-0 rounded-[0.8rem] px-1.5 py-2 text-[10px] font-medium text-slate-300 data-[state=active]:bg-white data-[state=active]:text-slate-950">
+                  History
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
 
-          {/* Triggers — mobile: Plan tab; desktop: Triggers right-tab */}
-          <div className={panelClass(activeTab === 'plan', 'triggers', activeRightTab)}>
-            <TriggersPanel refreshKey={refreshKey} />
-          </div>
+            {activeRightTab === 'clean' && (
+              <div className="flex flex-col gap-4">
+                <CleanSettingsPanel refreshKey={refreshKey} />
+                <CleanRoomsPanel refreshKey={refreshKey} />
+                <RoutinesPanel refreshKey={refreshKey} />
+              </div>
+            )}
 
-          {/* Clean Settings — mobile: Info tab; desktop: Info right-tab */}
-          <div className={panelClass(activeTab === 'info', 'info', activeRightTab)}>
-            <CleanSettingsPanel refreshKey={refreshKey} />
-          </div>
+            {/* Triggers tab: Triggers + Window Planner */}
+            {activeRightTab === 'triggers' && (
+              <div className="flex flex-col gap-4">
+                <TriggersPanel refreshKey={refreshKey} />
+                <WindowPlannerPanel />
+              </div>
+            )}
 
-          {/* History — mobile: Info tab; desktop: Info right-tab */}
-          <div className={panelClass(activeTab === 'info', 'info', activeRightTab)}>
-            <HistoryPanel refreshKey={refreshKey} />
+            {/* History tab: History + Consumables + Settings */}
+            {activeRightTab === 'history' && (
+              <div className="flex flex-col gap-4">
+                <HistoryPanel refreshKey={refreshKey} />
+                <ConsumablesPanel refreshKey={refreshKey} />
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Schedule column — desktop (lg+) persistent */}
-        <div className="hidden lg:flex lg:flex-col lg:gap-4 lg:w-[360px] lg:shrink-0 lg:sticky lg:top-5 lg:max-h-[calc(100vh-40px)] lg:overflow-y-auto">
-          <SchedulePanel refreshKey={refreshKey} />
+        <div className="flex flex-col gap-4 md:hidden">
+          {activeTab === 'schedule' && (
+            <>
+              <SchedulePanel refreshKey={refreshKey} />
+              <CleanSettingsPanel refreshKey={refreshKey} />
+            </>
+          )}
+
+          {activeTab === 'clean' && (
+            <>
+              <CleanRoomsPanel refreshKey={refreshKey} />
+              <RoutinesPanel refreshKey={refreshKey} />
+              <TriggersPanel refreshKey={refreshKey} />
+              <WindowPlannerPanel />
+            </>
+          )}
+
+          {activeTab === 'history' && (
+            <>
+              <HistoryPanel refreshKey={refreshKey} />
+              <ConsumablesPanel refreshKey={refreshKey} />
+            </>
+          )}
         </div>
       </div>
 
-      </div>{/* end centering wrapper */}
-
-      {/* Mobile bottom tab bar */}
       <nav
-        className="md:hidden fixed bottom-0 left-0 right-0 flex bg-card border-t border-border z-50"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        className="fixed bottom-3 left-1/2 z-50 flex w-[min(92vw,460px)] -translate-x-1/2 rounded-[1.6rem] border border-white/10 bg-slate-950/85 p-1.5 shadow-[0_20px_60px_rgba(2,8,20,0.45)] backdrop-blur-xl md:hidden"
+        style={{ paddingBottom: 'calc(6px + env(safe-area-inset-bottom))' }}
       >
-        {([
-          { id: 'now' as const,   icon: Home,         label: 'Now'   },
-          { id: 'clean' as const, icon: Sparkles,     label: 'Clean' },
-          { id: 'plan' as const,  icon: CalendarDays, label: 'Plan'  },
-          { id: 'info' as const,  icon: BarChart2,    label: 'Info'  },
-        ] as { id: MobileTab; icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; label: string }[]).map(t => (
+        {mobileTabs.map(t => (
           <button
             key={t.id}
             onClick={() => handleTabChange(t.id)}
-            className={`flex flex-col items-center gap-0.5 flex-1 bg-transparent border-0 cursor-pointer text-[10px] py-2 transition-colors ${activeTab === t.id ? 'text-primary' : 'text-muted-foreground'}`}
+            className={`flex flex-1 flex-col items-center gap-1 rounded-[1rem] border border-transparent px-3 py-2 text-[10px] transition ${
+              activeTab === t.id
+                ? 'bg-primary text-primary-foreground shadow-[0_10px_30px_rgba(96,165,250,0.35)]'
+                : 'text-muted-foreground'
+            }`}
           >
             <t.icon size={20} strokeWidth={1.75} />
-            {t.label}
+            <span className="font-medium">{t.label}</span>
           </button>
         ))}
       </nav>
