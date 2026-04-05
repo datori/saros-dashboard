@@ -284,9 +284,9 @@ async function main() {
       await page.goto(`http://localhost:${PORT}`, { waitUntil: 'networkidle' });
       await page.waitForTimeout(600);
 
-      // Click the "Info" right-tab to show schedule + history
-      const infoTab = page.locator('[role="tab"]').filter({ hasText: 'Info' });
-      await infoTab.click();
+      // Click the "History" right-tab to show history + consumables alongside the Gantt schedule
+      const historyTab = page.locator('[role="tab"]').filter({ hasText: 'History' });
+      await historyTab.click();
       await page.waitForTimeout(400);
 
       const rawPath = join(OUT, '_raw_schedule.png');
