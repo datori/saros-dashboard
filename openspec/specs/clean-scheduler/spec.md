@@ -24,7 +24,7 @@ The system SHALL store per-room cleaning intervals (vacuum and mop separately) i
 - **THEN** the room's `priority_weight` SHALL be updated to 1.5
 
 ### Requirement: Overdue ratio computation
-The system SHALL compute an overdue ratio for each room that has a configured interval, based only on completed clean events.
+The system SHALL compute an overdue ratio for each room that has a configured interval, based only on completed clean events. Due-ness SHALL be quantized to the local calendar day: if a clean becomes due at any time on the current local date, the room SHALL be treated as due for the full day.
 
 #### Scenario: Not yet due
 - **WHEN** a room was last successfully cleaned 1 day ago with a 3-day interval
@@ -33,6 +33,11 @@ The system SHALL compute an overdue ratio for each room that has a configured in
 #### Scenario: Exactly due
 - **WHEN** a room was last successfully cleaned exactly 3 days ago with a 3-day interval
 - **THEN** its vacuum overdue ratio SHALL be 1.0
+
+#### Scenario: Due later today counts as due now
+- **WHEN** a room's exact due timestamp falls later on the current local calendar day
+- **THEN** its overdue ratio SHALL be treated as at least `1.0`
+- **AND** the room SHALL be included in overdue queries, planning, and auto-window dispatch before the exact due timestamp arrives
 
 #### Scenario: Overdue
 - **WHEN** a room was last successfully cleaned 6 days ago with a 3-day interval

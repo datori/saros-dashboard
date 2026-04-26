@@ -47,24 +47,29 @@ Rooms SHALL be sorted by descending urgency score. Urgency score = `max(vacuum_o
 ---
 
 ### Requirement: Gradient interval band
-For each track with a schedule, the panel SHALL render a gradient band from the last clean date to the due date. The gradient SHALL transition from teal-green at the left anchor to amber at 70% through the interval to orange-red at 100% (the due date).
+For each track with a schedule, the panel SHALL render a gradient band from the last clean date to the start of the local due day. The gradient SHALL transition from teal-green at the left anchor to amber at 70% through the interval to orange-red at 100% (the due-day boundary).
 
 #### Scenario: Band renders between clean and due
 - **WHEN** `last_vacuumed` is set and `vacuum_days` is set
-- **THEN** a gradient div spans from xPct(lastClean) to xPct(dueDate) on the track
+- **THEN** a gradient div spans from xPct(lastClean) to xPct(startOfLocalDueDay) on the track
 
 #### Scenario: Due date outside window — band exits right edge
-- **WHEN** the due date is beyond the right edge of the window
+- **WHEN** the due day is beyond the right edge of the window
 - **THEN** the band extends to the right edge; a `→ Nd` label appears at the right boundary
 
 ---
 
 ### Requirement: Overdue red band
-When the due date has passed (overdue), the panel SHALL render a solid red band from the due date position to the NOW line. This band SHALL appear in addition to (or replacing) the gradient band if the entire interval is already past.
+When the due local calendar day has begun (overdue), the panel SHALL render a solid red band from the due-day position to the NOW line. This band SHALL appear in addition to (or replacing) the gradient band if the entire interval is already past.
 
 #### Scenario: Overdue band visible when past due
 - **WHEN** `vacuum_overdue_ratio` ≥ 1.0
-- **THEN** a red band spans from xPct(dueDate) to xPct(now) on the VAC track
+- **THEN** a red band spans from xPct(startOfLocalDueDay) to xPct(now) on the VAC track
+
+#### Scenario: Due later today renders as overdue for the whole day
+- **WHEN** a room's exact due timestamp falls later on the current local calendar day
+- **THEN** the VAC or MOP track SHALL render as due already for that day
+- **AND** the overdue band SHALL begin at the start of the local due day rather than the exact due timestamp
 
 #### Scenario: Never-cleaned track is entirely red
 - **WHEN** `last_vacuumed` is null and `vacuum_days` is set
@@ -94,15 +99,15 @@ The panel SHALL render a solid dot at the position of the most recent confirmed 
 ---
 
 ### Requirement: Due date diamond marker
-When the due date falls within the window, the panel SHALL render a small diamond marker at xPct(dueDate). The marker color SHALL match the urgency: green if ratio < 0.7, amber if 0.7 ≤ ratio < 1.0, red if overdue.
+When the due local calendar day falls within the window, the panel SHALL render a small diamond marker at xPct(startOfLocalDueDay). The marker color SHALL match the urgency: green if ratio < 0.7, amber if 0.7 ≤ ratio < 1.0, red if overdue.
 
 #### Scenario: Green diamond for upcoming due date
-- **WHEN** due date is within the window and ratio < 0.7
-- **THEN** a green diamond marker appears at the due date position
+- **WHEN** the due day is within the window and ratio < 0.7
+- **THEN** a green diamond marker appears at the due-day position
 
 #### Scenario: Red diamond (or no marker) when overdue
 - **WHEN** ratio ≥ 1.0
-- **THEN** no future diamond is shown (due date is in the past); the overdue band conveys urgency instead
+- **THEN** no future diamond is shown (the due day is current or past); the overdue band conveys urgency instead
 
 ---
 
@@ -133,7 +138,7 @@ Each room row group SHALL include a "Clean Now" button. Clicking it SHALL POST t
 ---
 
 ### Requirement: Hover tooltips
-Track elements SHALL show tooltips on hover revealing exact dates: confirmed dot → "Cleaned [date]", inferred dot → "Est. cleaned [date]", due marker → "Due [date]", overdue band → "Overdue since [date] ([N] days)".
+Track elements SHALL show tooltips on hover revealing exact dates: confirmed dot → "Cleaned [date]", inferred dot → "Est. cleaned [date]", due marker → "Due [date]", overdue band → "Overdue since [due day] ([N] days)".
 
 #### Scenario: Confirmed dot tooltip
 - **WHEN** user hovers over the confirmed clean dot
@@ -145,7 +150,7 @@ Track elements SHALL show tooltips on hover revealing exact dates: confirmed dot
 
 #### Scenario: Overdue band tooltip
 - **WHEN** user hovers over the red overdue band
-- **THEN** a tooltip shows "Overdue since [due date] (N days)"
+- **THEN** a tooltip shows "Overdue since [due day] (N days)"
 
 ---
 
@@ -159,4 +164,3 @@ The panel SHALL render a date axis at the top of the track area. Tick marks SHAL
 #### Scenario: TODAY label distinguished
 - **WHEN** the tick for the current date is rendered
 - **THEN** it is labeled "TODAY" and uses the primary color instead of muted foreground
-

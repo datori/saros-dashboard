@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # DB in project root alongside .roborock_session.json
@@ -482,7 +482,16 @@ def _compute_overdue_ratio(
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
     days_since = (now - last).total_seconds() / 86400
-    return days_since / interval_days
+    ratio = days_since / interval_days
+
+    # Quantize due-ness to the local calendar day: if a clean becomes due at any
+    # point today, treat it as due for the full day so an earlier window can pick it up.
+    local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    due_at = last + timedelta(days=interval_days)
+    if due_at.astimezone(local_tz).date() <= now.astimezone(local_tz).date():
+        return max(1.0, ratio)
+
+    return ratio
 
 
 def _get_last_cleaned(

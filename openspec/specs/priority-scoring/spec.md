@@ -45,6 +45,11 @@ The system SHALL compute a composite score for each overdue room as `room_weight
 - **WHEN** a room has overdue_ratio < 1.0 or no interval configured
 - **THEN** it SHALL NOT be included in priority scoring
 
+#### Scenario: Due later today participates as due
+- **WHEN** a room's exact due timestamp falls later on the current local calendar day
+- **THEN** scheduler quantization SHALL treat its `overdue_ratio` as at least `1.0`
+- **AND** it SHALL be eligible for priority scoring immediately for that day
+
 ### Requirement: Cross-mode priority ranking
 The system SHALL rank rooms across both vacuum and mop modes in a single priority queue.
 

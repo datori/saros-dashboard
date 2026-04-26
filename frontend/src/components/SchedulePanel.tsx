@@ -58,6 +58,16 @@ function xPct(date: Date, windowStart: Date, windowDurationMs: number): number {
   return ((date.getTime() - windowStart.getTime()) / windowDurationMs) * 100
 }
 
+function startOfLocalDay(date: Date): Date {
+  const day = new Date(date)
+  day.setHours(0, 0, 0, 0)
+  return day
+}
+
+function localDayNumber(date: Date): number {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS)
+}
+
 function getWindowBounds(now: Date, isMobile: boolean): GanttWindow {
   const pastDays = isMobile ? 2 : 7
   const totalDays = isMobile ? 10 : 21
@@ -162,7 +172,7 @@ function GanttLegend() {
       </span>
       <span className="flex items-center gap-1.5">
         <span className="inline-block w-2 h-2 rotate-45 rounded-sm" style={{ backgroundColor: DIAMOND_FRESH, boxShadow: DIAMOND_GLOW_FRESH }} />
-        due date
+        due day
       </span>
       <span className="flex items-center gap-1.5">
         <span className="inline-block w-[2px] h-3 rounded-full" style={{ backgroundColor: NOW_COLOR, boxShadow: NOW_GLOW }} />
@@ -202,10 +212,11 @@ function Track({
   }
 
   const lastDate = last ? new Date(last) : null
-  const dueDate  = lastDate ? new Date(lastDate.getTime() + intervalDays * DAY_MS) : null
+  const dueDate  = lastDate ? startOfLocalDay(new Date(lastDate.getTime() + intervalDays * DAY_MS)) : null
   const duePct   = dueDate  ? xPct(dueDate,  windowStart, windowDurationMs) : null
   const lastPct  = lastDate ? xPct(lastDate, windowStart, windowDurationMs) : null
   const now      = new Date(windowStart.getTime() + (nowPct / 100) * windowDurationMs)
+  const todayStart = startOfLocalDay(now)
   const isOverdue = ratio !== null && ratio >= 1.0
 
   // Back-extrapolate inferred cleans from lastDate
@@ -233,14 +244,14 @@ function Track({
     ? Math.ceil((dueDate.getTime() - windowEnd.getTime()) / DAY_MS) : 0
 
   const overdueTooltip = dueDate
-    ? `Overdue since ${dueDate.toLocaleDateString()} (${Math.floor((now.getTime() - dueDate.getTime()) / DAY_MS)} days)`
+    ? `Overdue since ${dueDate.toLocaleDateString()} (${Math.max(0, localDayNumber(todayStart) - localDayNumber(dueDate))} days)`
     : 'Overdue'
 
   // Forward-extrapolate future cycle due dates
   const futureDiamonds: { pct: number; date: Date; nth: number }[] = []
   if (dueDate && intervalDays) {
     for (let n = 1; n <= 10; n++) {
-      const d = new Date(dueDate.getTime() + n * intervalDays * DAY_MS)
+      const d = startOfLocalDay(new Date(dueDate.getTime() + n * intervalDays * DAY_MS))
       const p = xPct(d, windowStart, windowDurationMs)
       if (p > 100) break
       if (p >= 0) futureDiamonds.push({ date: d, pct: p, nth: n })

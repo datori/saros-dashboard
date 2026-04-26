@@ -80,9 +80,14 @@ export default function WindowPlannerPanel() {
       {error ? (
         <p className="text-muted-foreground italic text-sm">Preview unavailable: {error}</p>
       ) : queue.length === 0 ? (
-        <p className="text-muted-foreground text-sm">No overdue rooms</p>
+        <p className="text-muted-foreground text-sm">No rooms are due today or overdue.</p>
       ) : (
         <div className="space-y-1.5">
+          {targetMode && (
+            <p className="text-[11px] text-muted-foreground">
+              Preview is locked to the highest-priority <span className="uppercase">{targetMode}</span> batch, matching auto-dispatch.
+            </p>
+          )}
           {selected.map(r => {
             const estMin = r.estimated_sec != null ? `${Math.round(r.estimated_sec / 60)}m` : '?'
             const score = r.priority_score != null ? r.priority_score.toFixed(1) : '∞'

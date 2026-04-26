@@ -4,11 +4,11 @@
 The system SHALL expose a `GET /api/window/preview` endpoint that returns the current priority queue for client-side planning.
 
 #### Scenario: Rooms are overdue
-- **WHEN** `GET /api/window/preview` is called and rooms have overdue_ratio >= 1.0
+- **WHEN** `GET /api/window/preview` is called and rooms are due today or overdue (`overdue_ratio >= 1.0` after scheduler day-quantization)
 - **THEN** the response SHALL contain a `queue` array of entries sorted by priority_score descending, each with `segment_id`, `name`, `mode`, `estimated_sec`, `priority_score`, `overdue_ratio`, and `priority_weight`
 
 #### Scenario: No rooms overdue
-- **WHEN** `GET /api/window/preview` is called and no rooms have overdue_ratio >= 1.0
+- **WHEN** `GET /api/window/preview` is called and no rooms are due today or overdue
 - **THEN** the response SHALL contain an empty `queue` array
 
 #### Scenario: Mixed modes in queue
