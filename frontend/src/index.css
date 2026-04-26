@@ -1,39 +1,41 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
-/* Dashboard dark palette mapped to shadcn CSS variables */
 :root {
-  --background: oklch(24% 0.018 240);
-  --foreground: oklch(84% 0.012 220);
-  --card: oklch(27% 0.018 240);
-  --card-foreground: oklch(84% 0.012 220);
-  --popover: oklch(27% 0.018 240);
-  --popover-foreground: oklch(84% 0.012 220);
-  --primary: oklch(64% 0.18 245);          /* #4f8ef7 */
+  --background: oklch(21% 0.024 248);
+  --foreground: oklch(93% 0.01 240);
+  --card: oklch(26% 0.025 245 / 0.84);
+  --card-foreground: oklch(93% 0.01 240);
+  --popover: oklch(25% 0.024 245 / 0.94);
+  --popover-foreground: oklch(93% 0.01 240);
+  --primary: oklch(71% 0.16 223);
   --primary-foreground: oklch(100% 0 0);
-  --secondary: oklch(33% 0.018 240);
-  --secondary-foreground: oklch(84% 0.012 220);
-  --muted: oklch(33% 0.018 240);
-  --muted-foreground: oklch(63% 0.012 220);
-  --accent: oklch(33% 0.018 240);
-  --accent-foreground: oklch(84% 0.012 220);
-  --destructive: oklch(55% 0.22 25);        /* #ef4444 */
+  --secondary: oklch(31% 0.025 244);
+  --secondary-foreground: oklch(90% 0.012 240);
+  --muted: oklch(30% 0.018 244);
+  --muted-foreground: oklch(72% 0.012 235);
+  --accent: oklch(33% 0.03 223);
+  --accent-foreground: oklch(96% 0.01 230);
+  --destructive: oklch(62% 0.2 22);
   --destructive-foreground: oklch(100% 0 0);
-  --border: oklch(37% 0.018 240);
-  --input: oklch(37% 0.018 240);
+  --border: oklch(42% 0.02 242 / 0.55);
+  --input: oklch(42% 0.02 242 / 0.55);
   --ring: oklch(64% 0.18 245);
-  --radius: 0.5rem;
+  --radius: 1rem;
 
-  /* Custom extras for status colours */
-  --success: oklch(55% 0.18 145);           /* #22c55e */
-  --warning: oklch(75% 0.18 85);            /* #eab308 */
+  --success: oklch(71% 0.16 155);
+  --warning: oklch(78% 0.16 85);
+  --surface: rgba(14, 24, 39, 0.72);
+  --surface-strong: rgba(18, 31, 52, 0.9);
+  --panel-shadow: 0 22px 60px rgba(2, 8, 20, 0.42);
 }
 
 @theme inline {
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -65,9 +67,31 @@
   }
   body {
     @apply bg-background text-foreground font-sans text-base antialiased;
+    min-height: 100svh;
+    background-image:
+      radial-gradient(circle at top left, rgba(96, 165, 250, 0.18), transparent 28%),
+      radial-gradient(circle at top right, rgba(251, 191, 36, 0.12), transparent 24%),
+      linear-gradient(180deg, #07111f 0%, #0a1423 38%, #08111d 100%);
+    background-attachment: fixed;
   }
   html {
     color-scheme: dark;
+    background: #08111d;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 85%);
+    opacity: 0.22;
+  }
+  #root {
+    min-height: 100svh;
   }
 }
 
