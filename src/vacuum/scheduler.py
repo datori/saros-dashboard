@@ -614,24 +614,76 @@ class PriorityEntry:
 def _get_priority_queue_sync() -> list[PriorityEntry]:
     """Return all overdue rooms across both modes, scored and sorted descending."""
     schedule = _get_schedule_sync()
+
+    # When mop dispatch settings use a non-OFF fan speed, a mop run physically
+    # vacuums too (logged as mode='both', resetting both clocks).  In that case,
+    # represent ALL overdue rooms (for either vacuum or mop) as a single mop entry —
+    # the mop dispatch will satisfy both needs in one pass.  This prevents the queue
+    # from mixing vacuum and mop entries, which would cause the window planner to
+    # dispatch only the top-mode batch (typically vacuum) and defer mop indefinitely.
+    mop_gives_both = False
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT fan_speed FROM dispatch_settings WHERE mode = 'mop'"
+        ).fetchone()
+        if row:
+            fs = (row["fan_speed"] or "").lower()
+            mop_gives_both = bool(fs and fs != "off")
+
     entries: list[PriorityEntry] = []
-    for room in schedule:
-        for mode, ratio_attr in [("vacuum", "vacuum_overdue_ratio"), ("mop", "mop_overdue_ratio")]:
-            ratio = getattr(room, ratio_attr)
-            if ratio is None or ratio < 1.0:
-                continue
-            type_weight = TYPE_WEIGHTS.get(mode, 1.0)
-            score = compute_priority_score(room.priority_weight, type_weight, ratio)
-            est = _estimate_duration_sync([room.segment_id])
-            entries.append(PriorityEntry(
-                segment_id=room.segment_id,
-                name=room.name,
-                mode=mode,
-                overdue_ratio=ratio,
-                priority_score=score,
-                estimated_sec=est,
-                priority_weight=room.priority_weight,
-            ))
+
+    if mop_gives_both:
+        for room in schedule:
+            v_ratio = room.vacuum_overdue_ratio
+            m_ratio = room.mop_overdue_ratio
+            v_overdue = v_ratio is not None and v_ratio >= 1.0
+            m_overdue = m_ratio is not None and m_ratio >= 1.0
+            if m_overdue:
+                # Room needs mopping → single mop entry, scored by the most urgent need.
+                # Suppresses the separate vacuum entry since the mop run will cover it.
+                best_ratio = max(v_ratio if v_overdue else 0.0, m_ratio)
+                score = compute_priority_score(room.priority_weight, TYPE_WEIGHTS["mop"], best_ratio)
+                est = _estimate_duration_sync([room.segment_id])
+                entries.append(PriorityEntry(
+                    segment_id=room.segment_id,
+                    name=room.name,
+                    mode="mop",
+                    overdue_ratio=best_ratio,
+                    priority_score=score,
+                    estimated_sec=est,
+                    priority_weight=room.priority_weight,
+                ))
+            elif v_overdue:
+                # Vacuum-only overdue (no mop interval or mop not yet due) → vacuum entry.
+                score = compute_priority_score(room.priority_weight, TYPE_WEIGHTS["vacuum"], v_ratio)
+                est = _estimate_duration_sync([room.segment_id])
+                entries.append(PriorityEntry(
+                    segment_id=room.segment_id,
+                    name=room.name,
+                    mode="vacuum",
+                    overdue_ratio=v_ratio,
+                    priority_score=score,
+                    estimated_sec=est,
+                    priority_weight=room.priority_weight,
+                ))
+    else:
+        for room in schedule:
+            for mode, ratio_attr in [("vacuum", "vacuum_overdue_ratio"), ("mop", "mop_overdue_ratio")]:
+                ratio = getattr(room, ratio_attr)
+                if ratio is None or ratio < 1.0:
+                    continue
+                type_weight = TYPE_WEIGHTS.get(mode, 1.0)
+                score = compute_priority_score(room.priority_weight, type_weight, ratio)
+                est = _estimate_duration_sync([room.segment_id])
+                entries.append(PriorityEntry(
+                    segment_id=room.segment_id,
+                    name=room.name,
+                    mode=mode,
+                    overdue_ratio=ratio,
+                    priority_score=score,
+                    estimated_sec=est,
+                    priority_weight=room.priority_weight,
+                ))
     # Sort descending by score; inf sorts first with reverse=True
     entries.sort(key=lambda e: e.priority_score if e.priority_score != float("inf") else float("inf"), reverse=True)
     return entries

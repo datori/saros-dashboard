@@ -57,9 +57,15 @@ The system SHALL rank rooms across both vacuum and mop modes in a single priorit
 - **WHEN** Kitchen is 2.0× overdue for vacuum and Bathroom is 3.0× overdue for mop
 - **THEN** both SHALL appear in the priority queue, scored independently, and the higher-scoring entry SHALL be dispatched first
 
-#### Scenario: Same room overdue for both modes
-- **WHEN** a room is overdue for both vacuum and mop
-- **THEN** it SHALL appear twice in the priority queue (once per mode) with independent scores
+#### Scenario: Mop dispatch gives both credit — mop-overdue rooms collapsed
+- **WHEN** the mop dispatch settings have a non-OFF fan speed (meaning a mop run also vacuums, logged as `mode="both"`)
+- **THEN** any room that is mop-overdue SHALL appear as a single `"mop"` entry — no separate vacuum entry is generated for that room, since the mop dispatch will reset both clocks in one pass
+- **AND** the mop entry's priority score SHALL be computed using the mop type weight and the most urgent of its vacuum and mop overdue ratios
+- **AND** rooms that are only vacuum-overdue (no mop interval, or mop not yet due) SHALL still appear as `"vacuum"` entries with independent scores
+
+#### Scenario: Mop dispatch does not vacuum — independent entries
+- **WHEN** the mop dispatch settings have `fan_speed=off`
+- **THEN** vacuum and mop overdue rooms SHALL generate separate entries (one per mode) with independent scores
 
 #### Scenario: Batch mode grouping
 - **WHEN** the dispatch selects multiple rooms, all selected rooms for the same mode SHALL be batched together
