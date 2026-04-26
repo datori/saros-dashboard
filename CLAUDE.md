@@ -2,6 +2,8 @@
 
 Python CLI, MCP server, and web dashboard for the **Roborock Saros 10R** robot vacuum, built on top of `python-roborock` (cloud API, not local).
 
+Scheduler follow-up work is tracked in [docs/scheduler-reliability-plan.md](/home/openclaw/code/vacuum/docs/scheduler-reliability-plan.md).
+
 ## Project Structure
 
 ```

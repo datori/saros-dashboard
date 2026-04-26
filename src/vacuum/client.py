@@ -110,6 +110,35 @@ class Room:
 
 
 @dataclass
+class MapDebugRoom:
+    segment_id: int
+    name: str
+    anchor_x: float
+    anchor_y: float
+    center_x: float
+    center_y: float
+    width: float | None = None
+    height: float | None = None
+    distance_from_charger: float | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "segment_id": self.segment_id,
+            "name": self.name,
+            "anchor_x": round(self.anchor_x, 1),
+            "anchor_y": round(self.anchor_y, 1),
+            "center_x": round(self.center_x, 1),
+            "center_y": round(self.center_y, 1),
+            "width": round(self.width, 1) if self.width is not None else None,
+            "height": round(self.height, 1) if self.height is not None else None,
+            "distance_from_charger": (
+                round(self.distance_from_charger, 1)
+                if self.distance_from_charger is not None else None
+            ),
+        }
+
+
+@dataclass
 class Consumables:
     main_brush_pct: int | None
     side_brush_pct: int | None
@@ -162,6 +191,28 @@ class CleanRecord:
             "finish_reason": self.finish_reason,
             "avoid_count": self.avoid_count,
             "wash_count": self.wash_count,
+        }
+
+
+@dataclass
+class MapDebugInfo:
+    charger_x: float | None
+    charger_y: float | None
+    vacuum_x: float | None
+    vacuum_y: float | None
+    vacuum_room: int | None
+    vacuum_room_name: str | None
+    rooms: list[MapDebugRoom]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "charger_x": round(self.charger_x, 1) if self.charger_x is not None else None,
+            "charger_y": round(self.charger_y, 1) if self.charger_y is not None else None,
+            "vacuum_x": round(self.vacuum_x, 1) if self.vacuum_x is not None else None,
+            "vacuum_y": round(self.vacuum_y, 1) if self.vacuum_y is not None else None,
+            "vacuum_room": self.vacuum_room,
+            "vacuum_room_name": self.vacuum_room_name,
+            "rooms": [room.as_dict() for room in self.rooms],
         }
 
 
@@ -334,6 +385,23 @@ class VacuumClient:
         v1 = await self._v1()
         await v1.command.send(RoborockCommand.FIND_ME)
 
+    async def send_raw_command(
+        self,
+        command: RoborockCommand | str,
+        params: Any = None,
+    ) -> Any:
+        """Send a raw V1 command and return the device response."""
+        v1 = await self._v1()
+        return await v1.command.send(command, params)
+
+    async def get_clean_sequence(self) -> Any:
+        """Return the device's configured clean sequence, if supported."""
+        return await self.send_raw_command(RoborockCommand.GET_CLEAN_SEQUENCE)
+
+    async def get_segment_status(self) -> Any:
+        """Return segment-status data, if supported by the device."""
+        return await self.send_raw_command(RoborockCommand.GET_SEGMENT_STATUS)
+
     # -------------------------------------------------------------------------
     # Room and zone cleaning
     # -------------------------------------------------------------------------
@@ -379,6 +447,71 @@ class VacuumClient:
         if v1.rooms.rooms is None:
             return []
         return [Room(id=r.segment_id, name=r.name) for r in v1.rooms.rooms]
+
+    async def get_map_debug_info(self) -> MapDebugInfo:
+        """Return charger and room geometry for proximity debugging."""
+        v1 = await self._v1()
+        await v1.rooms.refresh()
+        await v1.map_content.refresh()
+
+        room_name_map: dict[int, str] = {}
+        if v1.rooms.rooms is not None:
+            room_name_map = {r.segment_id: r.name for r in v1.rooms.rooms}
+
+        map_data = v1.map_content.map_data
+        if map_data is None:
+            raise RuntimeError("Map data unavailable from device")
+
+        charger = getattr(map_data, "charger", None)
+        charger_x = charger.x if charger is not None else None
+        charger_y = charger.y if charger is not None else None
+
+        vacuum_position = getattr(map_data, "vacuum_position", None)
+        vacuum_x = vacuum_position.x if vacuum_position is not None else None
+        vacuum_y = vacuum_position.y if vacuum_position is not None else None
+        vacuum_room = getattr(map_data, "vacuum_room", None)
+        vacuum_room_name = getattr(map_data, "vacuum_room_name", None)
+        if vacuum_room_name is None and vacuum_room is not None:
+            vacuum_room_name = room_name_map.get(vacuum_room)
+
+        rooms: list[MapDebugRoom] = []
+        raw_rooms = getattr(map_data, "rooms", None) or {}
+        for segment_id, room in raw_rooms.items():
+            center_x = (room.x0 + room.x1) / 2
+            center_y = (room.y0 + room.y1) / 2
+            anchor_x = room.pos_x if room.pos_x is not None else center_x
+            anchor_y = room.pos_y if room.pos_y is not None else center_y
+            dist = None
+            if charger_x is not None and charger_y is not None:
+                dist = ((anchor_x - charger_x) ** 2 + (anchor_y - charger_y) ** 2) ** 0.5
+            rooms.append(MapDebugRoom(
+                segment_id=int(segment_id),
+                name=room_name_map.get(int(segment_id)) or room.name or f"Room {segment_id}",
+                anchor_x=anchor_x,
+                anchor_y=anchor_y,
+                center_x=center_x,
+                center_y=center_y,
+                width=abs(room.x1 - room.x0),
+                height=abs(room.y1 - room.y0),
+                distance_from_charger=dist,
+            ))
+
+        rooms.sort(
+            key=lambda r: (
+                float("inf") if r.distance_from_charger is None else r.distance_from_charger,
+                r.name.lower(),
+            )
+        )
+
+        return MapDebugInfo(
+            charger_x=charger_x,
+            charger_y=charger_y,
+            vacuum_x=vacuum_x,
+            vacuum_y=vacuum_y,
+            vacuum_room=vacuum_room,
+            vacuum_room_name=vacuum_room_name,
+            rooms=rooms,
+        )
 
     async def rooms_by_name(self) -> dict[str, int]:
         """Return {name_lowercase: segment_id} mapping."""

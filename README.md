@@ -8,6 +8,8 @@ CLI, MCP server, and web dashboard for the **Roborock Saros 10R** robot vacuum, 
 
 > **Cloud API only.** The Saros 10R uses a newer local protocol not yet supported by `python-roborock`. All commands are relayed through Roborock's cloud MQTT broker (`usiot.roborock.com:8883`), even when the device is on the same LAN. See [Connectivity](#connectivity) for details.
 
+Current scheduler follow-up work is tracked in [docs/scheduler-reliability-plan.md](/home/openclaw/code/vacuum/docs/scheduler-reliability-plan.md).
+
 ---
 
 ## Features
@@ -82,11 +84,16 @@ vacuum locate                        # Play locator sound
 vacuum map                           # Show rooms and segment IDs
 vacuum rooms "Kitchen" "Living room" # Clean specific rooms
 vacuum rooms "Kitchen" --repeat 2   # Clean a room twice
+vacuum sequence                      # Raw clean-sequence / segment-status diagnostics
+vacuum map-debug                     # Charger/room coordinates and dock-distance ranking
+vacuum test-order "Kitchen" "Hall" --dry-run  # Show exact ordered room payload
 vacuum routine --list                # List available routines
 vacuum routine "morning-clean"       # Run a named routine
 vacuum history                       # Recent clean history
 vacuum consumables                   # Brush / filter / sensor wear
 ```
+
+`vacuum test-order` is a diagnostic tool only. Physical testing on April 11, 2026 showed that the Saros 10R did not reliably follow the submitted room list order for `APP_SEGMENT_CLEAN`; see [docs/scheduler-reliability-plan.md](/home/openclaw/code/vacuum/docs/scheduler-reliability-plan.md).
 
 ### Web dashboard
 

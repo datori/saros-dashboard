@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from typing import Annotated
 
@@ -80,6 +81,10 @@ def _err(msg: str) -> None:
 def _run(coro):
     """Run an async coroutine from a sync CLI command."""
     return asyncio.run(coro)
+
+
+def _dump_json(data) -> None:
+    typer.echo(json.dumps(data, indent=2, sort_keys=True, default=str))
 
 
 async def _with_client(coro_fn):
@@ -192,6 +197,32 @@ def map():
     _run(_with_client(_go))
 
 
+@app.command("map-debug")
+def map_debug():
+    """Show charger position, room anchors, and simple dock-distance ranking."""
+
+    async def _go(client: VacuumClient):
+        info = await client.get_map_debug_info()
+        if not info.rooms:
+            typer.echo("No parsed room geometry available from the current map.")
+            return
+
+        typer.echo("Map debug:")
+        typer.echo(f"  Charger:     ({info.charger_x}, {info.charger_y})")
+        typer.echo(f"  Vacuum:      ({info.vacuum_x}, {info.vacuum_y})")
+        typer.echo(f"  Vacuum room: {info.vacuum_room_name or info.vacuum_room or '(unknown)'}")
+        typer.echo("")
+        typer.echo(f"{'ID':<4} {'Room':<12} {'Anchor':<18} {'Center':<18} {'Dist from dock'}")
+        typer.echo("-" * 78)
+        for room in info.rooms:
+            anchor = f"({room.anchor_x:.1f}, {room.anchor_y:.1f})"
+            center = f"({room.center_x:.1f}, {room.center_y:.1f})"
+            dist = f"{room.distance_from_charger:.1f}" if room.distance_from_charger is not None else "n/a"
+            typer.echo(f"{room.segment_id:<4} {room.name:<12} {anchor:<18} {center:<18} {dist}")
+
+    _run(_with_client(_go))
+
+
 @app.command()
 def rooms(
     names:      Annotated[list[str], typer.Argument(help="Room name(s) to clean")],
@@ -280,6 +311,88 @@ def settings(
         if wf is not None:
             await client.set_water_flow(wf)
             typer.echo(f"Water flow set to {wf.name}.")
+
+    _run(_with_client(_go))
+
+
+@app.command("sequence")
+def sequence():
+    """Inspect device-level clean-sequence and segment-status diagnostics."""
+
+    async def _go(client: VacuumClient):
+        typer.echo("== Clean sequence ==")
+        try:
+            result = await client.get_clean_sequence()
+            _dump_json(result)
+        except Exception as e:
+            typer.echo(f"(unavailable) {e}")
+
+        typer.echo("")
+        typer.echo("== Segment status ==")
+        try:
+            result = await client.get_segment_status()
+            _dump_json(result)
+        except Exception as e:
+            typer.echo(f"(unavailable) {e}")
+
+    _run(_with_client(_go))
+
+
+@app.command("test-order")
+def test_order(
+    names: Annotated[list[str], typer.Argument(help="Room names in the exact order to submit")],
+    repeat: Annotated[int, typer.Option("--repeat", "-r", help="Times to clean each room")] = 1,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Resolve names and print the exact payload without dispatching")] = False,
+    fan_speed: Annotated[str | None, typer.Option("--fan-speed", help=f"Fan speed: {', '.join(_FAN_SPEED_CHOICES)}")] = None,
+    mop_mode: Annotated[str | None, typer.Option("--mop-mode", help=f"Mop mode: {', '.join(_MOP_MODE_CHOICES)}")] = None,
+    water_flow: Annotated[str | None, typer.Option("--water-flow", help=f"Water flow: {', '.join(_WATER_FLOW_CHOICES)}")] = None,
+    route: Annotated[str | None, typer.Option("--route", help=f"Route: {', '.join(_ROUTE_CHOICES)}")] = None,
+):
+    """Dispatch an ordered room-clean test for physical room-order validation."""
+
+    async def _go(client: VacuumClient):
+        name_map = await client.rooms_by_name()
+        segment_ids = []
+        resolved = []
+        missing = []
+        for name in names:
+            sid = name_map.get(name.lower())
+            if sid is None:
+                missing.append(name)
+            else:
+                segment_ids.append(sid)
+                resolved.append({"name": name, "segment_id": sid})
+        if missing:
+            available = list(name_map.keys())
+            _err(f"Unknown room(s): {missing}. Available: {available}")
+
+        typer.echo("Ordered room test payload:")
+        _dump_json({
+            "segments": segment_ids,
+            "rooms": resolved,
+            "repeat": repeat,
+            "clean_order_mode": 0,
+            "fan_speed": fan_speed,
+            "mop_mode": mop_mode,
+            "water_flow": water_flow,
+            "route": route,
+        })
+
+        if dry_run:
+            typer.echo("Dry run only. No command sent.")
+            return
+
+        await client.clean_rooms(
+            segment_ids,
+            repeat=repeat,
+            fan_speed=_parse_fan_speed(fan_speed),
+            mop_mode=_parse_mop_mode(mop_mode),
+            water_flow=_parse_water_flow(water_flow),
+            route=_parse_route(route),
+        )
+        typer.echo("")
+        typer.echo("Ordered room test dispatched.")
+        typer.echo("Watch which room the robot enters first, then dock it once the first-room choice is unambiguous.")
 
     _run(_with_client(_go))
 
